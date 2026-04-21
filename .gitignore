@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+venv/
+env/
+
+# Images (don't track large image files)
+splat-files/
+*.jpg
+*.jpeg
+*.png
+
+# Build artifacts
+*.zip
+*_processed/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Colab outputs
+output/
+sparse/
+*.ply
