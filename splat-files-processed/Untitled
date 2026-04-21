@@ -1,0 +1,67 @@
+/content/gaussian-splatting
+qt.qpa.xcb: could not connect to display 
+qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
+This application failed to start because no Qt platform plugin could be initialized. Reinstalling the application may fix this problem.
+
+Available platform plugins are: eglfs, linuxfb, minimal, minimalegl, offscreen, vnc, xcb.
+
+*** Aborted at 1776750745 (unix time) try "date -d @1776750745" if you are using GNU date ***
+PC: @                0x0 (unknown)
+*** SIGABRT (@0x1d45) received by PID 7493 (TID 0x7c133d8c5080) from PID 7493; stack trace: ***
+    @     0x7c1345886046 (unknown)
+    @     0x7c1343b0b520 (unknown)
+    @     0x7c1343b5f9fc pthread_kill
+    @     0x7c1343b0b476 raise
+    @     0x7c1343af17f3 abort
+    @     0x7c1344101ba3 QMessageLogger::fatal()
+    @     0x7c1344708713 QGuiApplicationPrivate::createPlatformIntegration()
+    @     0x7c1344708c08 QGuiApplicationPrivate::createEventDispatcher()
+    @     0x7c1344331b17 QCoreApplicationPrivate::init()
+    @     0x7c134470bb70 QGuiApplicationPrivate::init()
+    @     0x7c1344e1fced QApplicationPrivate::init()
+    @     0x5cd3e4ffa3dd colmap::RunFeatureExtractor()
+    @     0x5cd3e4fec499 main
+    @     0x7c1343af2d90 (unknown)
+    @     0x7c1343af2e40 __libc_start_main
+    @     0x5cd3e4fef3e5 _start
+qt.qpa.xcb: could not connect to display 
+qt.qpa.plugin: Could not load the Qt platform plugin "xcb" in "" even though it was found.
+This application failed to start because no Qt platform plugin could be initialized. Reinstalling the application may fix this problem.
+
+Available platform plugins are: eglfs, linuxfb, minimal, minimalegl, offscreen, vnc, xcb.
+
+*** Aborted at 1776750745 (unix time) try "date -d @1776750745" if you are using GNU date ***
+PC: @                0x0 (unknown)
+*** SIGABRT (@0x1d47) received by PID 7495 (TID 0x7f94acfbb080) from PID 7495; stack trace: ***
+    @     0x7f94b4f7c046 (unknown)
+    @     0x7f94b3201520 (unknown)
+    @     0x7f94b32559fc pthread_kill
+    @     0x7f94b3201476 raise
+    @     0x7f94b31e77f3 abort
+    @     0x7f94b37f7ba3 QMessageLogger::fatal()
+    @     0x7f94b3dfe713 QGuiApplicationPrivate::createPlatformIntegration()
+    @     0x7f94b3dfec08 QGuiApplicationPrivate::createEventDispatcher()
+    @     0x7f94b3a27b17 QCoreApplicationPrivate::init()
+    @     0x7f94b3e01b70 QGuiApplicationPrivate::init()
+    @     0x7f94b4515ced QApplicationPrivate::init()
+    @     0x5d4be1e309b6 colmap::RunExhaustiveMatcher()
+    @     0x5d4be1e25499 main
+    @     0x7f94b31e8d90 (unknown)
+    @     0x7f94b31e8e40 __libc_start_main
+    @     0x5d4be1e283e5 _start
+
+==============================================================================
+Loading database
+==============================================================================
+
+Loading cameras... 0 in 0.000s
+Loading matches... 0 in 0.000s
+Loading images... 0 in 0.000s (connected 0)
+Building correspondence graph... in 0.000s (ignored 0)
+
+Elapsed time: 0.000 [minutes]
+
+WARNING: No images with matches found in the database.
+
+ERROR: failed to create sparse model
+ls: cannot access 'sparse/0/': No such file or directory
