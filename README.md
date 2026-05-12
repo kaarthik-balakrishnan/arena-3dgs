@@ -1,81 +1,93 @@
 # 3D Arena Reconstruction with Gaussian Splatting
 
-Reconstruct a 3D arena from 93 images using Gaussian Splatting on Google Colab.
+Reconstruct a 10-15m arena from 91 photos using COLMAP + 3D Gaussian Splatting.
 
-## Overview
+## Quick Start (Google Colab)
 
-This project reconstructs a 10-15m arena from photos using:
-1. **COLMAP** - Structure-from-Motion to estimate camera poses and sparse 3D points
-2. **3D Gaussian Splatting** - Train a differentiable radiance field
-3. **Point Cloud** - Extract final 3D point cloud
+**Total time:** ~20 minutes on free Colab T4 GPU
 
-## Workflow
+| Step | Cell | What it does | Time |
+|------|------|-------------|------|
+| 1 | Mount Drive | Mount Google Drive for checkpoint saving | 10s |
+| 2 | Install deps | Installs COLMAP, PyTorch, 3DGS | 3 min |
+| 3B | Download images | Pulls 91 resized images from GitHub | 2 min |
+| 5 | Download COLMAP data | Uses pre-computed camera poses (skips 10 min COLMAP run) | 10s |
+| 6 | Convert format | Prepares data for 3DGS training | 10s |
+| 7A | Train (3000 iters) | Quick training run | 7 min |
+| 8 | Export results | Downloads .ply point cloud | 10s |
 
-### Step 1: Preprocess Images (Local Machine)
+### Instructions
 
-Resize images to reduce file size for Colab upload:
+1. Open the notebook in Colab:  
+   [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/kaarthik-balakrishnan/arena-3dgs/blob/main/arena_3dgs_colab.ipynb)
 
-```bash
-python prepare_images.py --input splat-files --output splat-files-processed --width 1920
-```
+2. Run cells **in order** from top to bottom.
 
-Then zip the processed images:
-```bash
-cd splat-files-processed && zip -r ../images.zip *
-```
+3. When prompted, mount your Google Drive (needed for checkpoint backups).
 
-### Step 2: Run on Google Colab
+4. For **Step 3B** (download images): The notebook will download the 91 resized images from this GitHub repo automatically.
 
-1. Open `notebook_colab.ipynb` in Google Colab
-2. Run cells in order
-3. When prompted, upload the ZIP file containing images
-4. After training, download the point cloud (.ply file)
+5. For **Step 5** (download COLMAP data): The notebook downloads pre-computed camera poses from this repo. This skips the 10-minute COLMAP step.
 
-### Step 3: View Results
+6. Run **Step 7A** (3000 iterations, ~7 min) or **Step 7B** (7000 iterations, ~15 min) for training.
 
-The output `.ply` file can be viewed in:
-- [MeshLab](https://www.meshlab.net/)
-- [CloudCompare](https://www.cloudcompare.org/)
-- [PyMeshLab](https://github.com/cdmsPyLabs/PyMeshLab)
+7. **Step 8** exports and downloads the resulting `.ply` point cloud.
+
+### Alternative: Manual Upload
+
+If the GitHub download doesn't work, use the included `colab_training_data.zip` (26 MB):
+
+1. In Colab, use **Step 3A** instead of 3B to upload the ZIP
+2. Use **Step 5** to download pre-computed COLMAP data
+3. Continue with Steps 6-8
 
 ## Files
 
 | File | Description |
 |------|-------------|
-| `prepare_images.py` | Resize images for Colab |
-| `notebook_colab.ipynb` | Main Colab notebook |
-| `splat-files/` | Original 93 images |
-| `reconstruct_2d.py` | Alternative 2D reconstruction |
+| `arena_3dgs_colab.ipynb` | **Main Colab notebook** — run this in Google Colab |
+| `colab_training_data.zip` | Ready-to-upload ZIP with 91 images (for manual Colab use) |
+| `splat-files/` | Original 91 photos |
+| `splat-files-processed/` | Resized to 1920px width |
+| `colmap_workspace/sparse/0/` | COLMAP output (camera poses + sparse point cloud) |
+| `output/arena_sparse_pointcloud.ply` | Sparse point cloud from COLMAP (15,906 points) |
+| `scripts/prepare_images.py` | Resize images for Colab upload |
+| `scripts/train_3dgs.py` | Local training script (requires GPU / gsplat) |
 
-## GPU Requirements
+## Local Run (CPU only)
 
-- **Recommended**: Google Colab with T4 or A100 GPU
-- **VRAM**: Minimum 12GB recommended
-- **Training Time**: ~10-15 minutes for 3000 iterations
-
-## Alternative Approaches
-
-### Using gsplat (modern library)
+COLMAP SfM runs fine on CPU. GPU-accelerated 3DGS training requires a CUDA GPU (not available on Intel Macs).
 
 ```bash
-pip install gsplat
+# Resize images
+python scripts/prepare_images.py --input splat-files --output splat-files-processed
+
+# Run COLMAP
+colmap feature_extractor --database_path colmap_workspace/database.db \
+    --image_path splat-files-processed --ImageReader.single_camera 1
+colmap exhaustive_matcher --database_path colmap_workspace/database.db
+colmap mapper --database_path colmap_workspace/database.db \
+    --image_path splat-files-processed --output_path colmap_workspace/sparse
+
+# Export sparse point cloud
+python scripts/export_pointcloud.py
 ```
 
-### Using Nerfstudio
+## Viewing Results
 
-```bash
-pip install nerfstudio
-ns-train gaussian-splatting --data /path/to/images
-```
+Open the `.ply` file in:
+- [MeshLab](https://www.meshlab.net/) — free 3D mesh viewer
+- [CloudCompare](https://www.cloudcompare.org/) — point cloud processing
+- [Potree](https://potree.org/) — web-based point cloud viewer
 
-## Troubleshooting
+## Requirements
 
-- **COLMAP fails**: Ensure images have sufficient overlap and features
-- **Out of memory**: Reduce image resolution or number of images
-- **Poor quality**: Increase training iterations
+- **GPU**: Google Colab (free T4) recommended for training
+- **VRAM**: 12GB+ (Colab T4 has 15GB)
+- **Local**: Python 3.9+, COLMAP 4.x (for SfM only)
 
 ## References
 
-- [3D Gaussian Splatting Paper](https://arxiv.org/abs/2308.04079)
-- [Official Repo](https://github.com/graphdeco-inria/gaussian-splatting)
-- [gsplat Library](https://github.com/nerfstudio-project/gsplat)
+- [3D Gaussian Splatting](https://arxiv.org/abs/2308.04079) — Kerbl et al. 2023
+- [Official 3DGS Repo](https://github.com/graphdeco-inria/gaussian-splatting)
+- [COLMAP](https://colmap.github.io/) — SfM pipeline

@@ -6,22 +6,17 @@ __pycache__/
 .eggs/
 venv/
 env/
+.gsplat_*/
 
-# Images (don't track large image files)
-splat-files/
-*.jpg
-*.jpeg
-*.png
+# COLMAP workspace (large binary files)
+colmap_workspace/
 
-# Build artifacts
+# Generated zip files
 *.zip
-*_processed/
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Colab outputs
-output/
-sparse/
-*.ply
+# Scratch / handover docs
+handover.md
