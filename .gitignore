@@ -20,3 +20,21 @@ Thumbs.db
 
 # Scratch / handover docs
 handover.md
+
+# Original full-res images (splat-files-processed are the canonical copies)
+splat-files/
+
+# Experimental COLMAP runs
+colmap_workspace_v2/
+colmap_workspace_v3/
+colmap_workspace_aliked/
+
+# Downloaded vocab tree
+vocab_tree.bin
+
+# Generated images and point clouds
+*.ply
+top_down_view.png
+detection_debug.png
+PointCloud.png
+ChamberGeometry_TopDownView.png
