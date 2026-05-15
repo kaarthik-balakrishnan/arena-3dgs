@@ -6,6 +6,7 @@ from tqdm import tqdm
 import struct
 from plyfile import PlyData, PlyElement
 import math
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE = Path(__file__).parent / "scene"
 SPARSE = Path(__file__).parent / "colmap_workspace/sparse/0"
@@ -69,22 +70,32 @@ print(f"Cameras: {len(cameras)}, Images: {len(images_data)}, Points: {len(points
 from gsplat import rasterization
 
 sorted_ids = sorted(images_data.keys(), key=lambda x: images_data[x]['name'])
-valid_ids = []
-valid_imgs = []
 
-for img_id in sorted_ids:
+def load_one(img_id):
     name = images_data[img_id]['name']
     full_path = BASE / "input" / name
     if full_path.exists():
-        valid_ids.append(img_id)
         img_bgr = cv2.imread(str(full_path))
-        valid_imgs.append(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
-    else:
-        alt_path = BASE / "input" / name.split('/')[-1]
-        if alt_path.exists():
-            valid_ids.append(img_id)
-            img_bgr = cv2.imread(str(alt_path))
-            valid_imgs.append(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+        if img_bgr is None: return None
+        return img_id, cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    alt_path = BASE / "input" / name.split('/')[-1]
+    if alt_path.exists():
+        img_bgr = cv2.imread(str(alt_path))
+        if img_bgr is None: return None
+        return img_id, cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    return None
+
+results = []
+with ThreadPoolExecutor(max_workers=8) as pool:
+    futures = [pool.submit(load_one, img_id) for img_id in sorted_ids]
+    for f in as_completed(futures):
+        r = f.result()
+        if r is not None:
+            results.append(r)
+
+results.sort(key=lambda x: sorted_ids.index(x[0]))
+valid_ids = [r[0] for r in results]
+valid_imgs = [r[1] for r in results]
 
 n_views = len(valid_ids)
 print(f"Found {n_views} valid images with COLMAP poses")
@@ -124,7 +135,8 @@ colors_init = torch.tensor(colors, dtype=torch.float32)
 n_points = len(means)
 print(f"Using {n_points} Gaussian primitives")
 
-quats = torch.tensor([[1.0, 0.0, 0.0, 0.0]] * n_points, dtype=torch.float32)
+quats = torch.zeros(n_points, 4, dtype=torch.float32)
+quats[:, 0] = 1.0
 opacities = torch.tensor([0.1] * n_points, dtype=torch.float32)
 scales = torch.tensor([[0.001, 0.001, 0.001]] * n_points, dtype=torch.float32)
 

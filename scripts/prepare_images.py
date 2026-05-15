@@ -9,6 +9,7 @@ import numpy as np
 import os
 from pathlib import Path
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class ImagePreprocessor:
     def __init__(self, input_folder, output_folder, max_width=1920, quality=90):
@@ -34,6 +35,14 @@ class ImagePreprocessor:
         
         return img
     
+    def _process_one(self, img_path):
+        img = self.resize_image(img_path)
+        if img is not None:
+            output_path = self.output_folder / img_path.name
+            cv2.imwrite(str(output_path), img, [cv2.IMWRITE_JPEG_QUALITY, self.quality])
+            return img_path
+        return None
+
     def process(self):
         self.output_folder.mkdir(parents=True, exist_ok=True)
         
@@ -41,14 +50,12 @@ class ImagePreprocessor:
                       sorted(self.input_folder.glob('*.jpeg')) + \
                       sorted(self.input_folder.glob('*.png'))
         
-        print(f"Found {len(image_files)} images to process")
+        print(f"Found {len(image_files)} images to process (parallel)")
         
-        for img_path in image_files:
-            img = self.resize_image(img_path)
-            if img is not None:
-                output_path = self.output_folder / img_path.name
-                cv2.imwrite(str(output_path), img, 
-                           [cv2.IMWRITE_JPEG_QUALITY, self.quality])
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(self._process_one, img_path) for img_path in image_files]
+            for f in as_completed(futures):
+                f.result()
         
         print(f"\nProcessed images saved to: {self.output_folder}")
         

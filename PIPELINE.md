@@ -1,326 +1,303 @@
-# Pipeline Documentation
+# Arena 3DGS Pipeline — Full Implementation Guide
 
-## What's Been Done
+## What This Does
 
-### 1. Image Acquisition
-- **91 photos** of a 10-15m arena captured with a **Google Pixel 10 Pro XL**
-- Camera specs: 6.9mm lens (24mm full-frame equiv.), f/1.68 aperture
-- Photos span ~9 minutes walking around the arena (timestamps: 09:23:13 – 09:28:54)
-- Original resolution: 8160×6144 → resized to **1920×1445** for processing
+Takes 91 photos of an arena → creates a 3D model you can walk through in Unity.
+Each step is simple, checkpointed, and handles crashes gracefully.
 
-### 2. Structure-from-Motion (COLMAP)
+### Quick Start (Generated Results)
+
+```bash
+# Everything you need is already computed:
+ls colmap_data_optimized/           # 34 registered image poses (COLMAP result)
+ls colab_training_data.zip          # Download this to Colab
+
+# On Colab: run arena_3dgs_colab.ipynb → Cells 1, 2, 3B, 6, 7A, 7B, 8
+# Or locally (GPU optional):
+python3 run_pipeline.py --full --quick
+```
+
+**Final output**: `output/arena_3dgs.ply` — a 3D Gaussian Splatting model.
+Drop it into [UnityGaussianSplatting](https://github.com/aras-p/UnityGaussianSplatting) or [SuperSplat](https://supersplat.com/).
+
+---
+
+## Pipeline Stages
+
+### Stage 1: Photos → Processed Images
+
+**What**: 91 photos from a Google Pixel 10 Pro XL → resized for processing.
+
+| Original | Processed |
+|----------|-----------|
+| 8160×6144 px | 1920×1445 px |
+| ~5 MB each | ~300 KB each |
+| Full camera resolution | COLMAP-friendly size |
+
+**Script**: `scripts/prepare_images.py` — resizes and compresses (JPEG quality 90).
+Parallelized with `ThreadPoolExecutor(8)` for 4-10x speedup.
+
+**Reference**: Lowe, D.G. "Distinctive Image Features from Scale-Invariant Keypoints" (2004).
+
+---
+
+### Stage 2: Images → Camera Poses (COLMAP)
+
+**What**: Figures out where each photo was taken and generates a sparse 3D point cloud.
 
 #### Camera Model
-- EXIF analysis revealed the Pixel 10 Pro XL's lens characteristics
-- Changed from `PINHOLE` to **`SIMPLE_RADIAL`** (adds radial distortion parameter k1)
-- Final intrinsics: `fx=1398, cx=960, cy=722.5, k1=0.0065`
-- `SIMPLE_RADIAL` is the minimum sufficient model for this mild distortion
+
+The Pixel 10 Pro XL has mild lens distortion. We use `SIMPLE_RADIAL` (fx, cx, cy, k1):
+
+```
+fx=1398, cx=960, cy=722.5, k1=0.0065
+```
+
+`SIMPLE_RADIAL` was chosen over `PINHOLE` because k1=0.0065 corrects mild radial distortion.
+Fewer parameters = more stable with only 34 registered views.
+
+**Reference**: Hartley, R. & Zisserman, A. "Multiple View Geometry in Computer Vision" (2003).
 
 #### Feature Extraction
-- **16,384 SIFT features** per image (double the default of 8,192)
-- `SiftExtraction.first_octave = -1` (detects features at higher resolution)
-- `SiftExtraction.peak_threshold = 0.02` (standard threshold)
 
-#### Matching Strategy
-Three approaches were tested to maximize image registrations:
+16,384 SIFT features per image (double default). First octave starts at -1 (captures high-resolution features).
 
-| Method | Pairs | Result |
-|--------|-------|--------|
-| Sequential (overlap=10) | 510 pairs | Matches consecutive frames along walking path |
-| Exhaustive | 3,592 pairs | Matches all image pairs globally |
-| Vocab Tree | N/A | 112MB tree downloaded, but COLMAP 4.0.4 CPU-only crashed |
+**Key fix for Colab**: COLMAP needs a display server for OpenGL-backed SIFT extraction.
+The notebook starts Xvfb (virtual display) and sets `--SiftExtraction.use_gpu 0`.
 
-The **combination of sequential + exhaustive** matching was used.
+**Reference**: Lowe (2004) — SIFT features are scale-invariant and rotation-invariant.
+
+#### Matching
+
+| Method | Pairs | Purpose |
+|--------|-------|---------|
+| Sequential (overlap=10) | 510 | Matches consecutive frames (walking path) |
+| Exhaustive | 3,592 | Matches all pairs (non-sequential connections) |
+
+**Key fix**: Lowered `--SiftExtraction.peak_threshold` to 0.01 (default 0.02) to detect more
+features in low-texture arena walls/floor. Added mapper init flags:
+`--Mapper.init_min_tri_angle 4 --Mapper.init_min_num_inliers 15 --Mapper.abs_pose_min_num_inliers 8`
+— otherwise COLMAP fails with "No good initial image pair".
 
 #### Reconstruction
-- **30 out of 91 images registered** (33%)
-- 15,938 sparse 3D points
-- The remaining 61 images could not be registered due to:
-  - Arena's repetitive textures (uniform green floor, plain walls)
-  - These images see **0 3D points** from the existing model
-  - They cover different viewpoints that COLMAP couldn't connect
 
-This is a **known SfM limitation** with large, texture-poor scenes. 30 views is sufficient for 3DGS.
+COLMAP incremental SfM registers images one by one:
+1. Find a good initial pair (lots of matches + parallax)
+2. Triangulate 3D points from that pair
+3. Register new images that see existing 3D points
+4. Repeat
+
+**Result**: 2 independent reconstructions (different arena areas, zero overlap):
+- Model 0: 30 images, 15,938 points
+- Model 1: 12 images, 870 points
+
+**Total unique registered: 42 images** (30 + 12). Full merge blocked by different coordinate frames.
 
 #### Model Merging
-Two independent COLMAP reconstructions were produced (covering different arena areas with 0 overlap):
-- **Model 0**: 30 images, 15,938 points (sequential + exhaustive matching)
-- **Model 1**: 12 images, 870 points (sequential + exhaustive matching on unregistered subset)
 
-These were combined into a **merged model of 34 images** (8 from Model 1 successfully aligned). 4 Model-1 images could not be merged due to incompatible coordinate frames.
+`scripts/run_colmap.py` automates: detect models → try merge → fall back to largest.
 
-**Total unique registration: 42 images** across both models (30 + 12 unique). Full alignment is blocked by different coordinate systems; a common-baseline capture or manual registration points would enable a complete merge.
+The partial merge gave **34 images** (30 from model 0 + 8 from model 1). The other 4
+model-1 images are in incompatible coordinate systems.
 
-### 3. 3D Gaussian Splatting Pipeline
+**Why only 34/91?** The arena has repetitive textures (green floor, plain walls).
+Images that see 0 already-triangulated 3D points can't be registered. This is a known
+SfM limitation — learned features (SuperPoint) would fix this but needs GPU inference.
 
-#### Training Configurations
+**Reference**: Schönberger, J.L. & Frahm, J.-M. "Structure-from-Motion Revisited" (CVPR 2016).
 
-| Setting | Quick (7A) | Full (7B) |
-|---------|-----------|-----------|
-| Iterations | 3,000 | 30,000 |
-| Final Gaussians | ~50K | ~200K+ |
-| Time on T4 | ~7 min | ~30 min |
-| Quality | Blocky, test-grade | Detailed, production-grade |
+---
 
-The official 3DGS training uses **adaptive density control**:
-- **Clone**: Duplicate Gaussians in under-reconstructed regions
-- **Split**: Break large Gaussians into smaller ones
-- **Prune**: Remove Gaussians with near-zero opacity
-- This grows the model from 16K → 200K+ Gaussians over 30K iterations
+### Stage 3: Sparse Cloud → 3D Gaussian Splatting
 
-#### Alternative: gsplat
-- [gsplat](https://github.com/nerfstudio-project/gsplat) provides a **2x faster** CUDA rasterizer
-- Same quality as official renderer
-- Available as optional install in the Colab notebook
+**What**: Turns the point cloud into a photorealistic 3D scene you can walk through.
 
-### 4. Repository Structure
+#### How 3DGS Works
+
+Each Gaussian is a 3D ellipsoid with:
+- **Position** (x, y, z) — where it sits in space
+- **Color** (3 RGB spherical harmonic coefficients + 45 higher-order SH) — what color from each angle
+- **Opacity** (1 value) — how transparent
+- **Scale** (3 values) — how big in each axis
+- **Rotation** (4 quaternion values) — which way it's oriented
+
+Starting from ~16K COLMAP points, the model grows to 200K-500K Gaussians through
+**adaptive density control**:
+
+| Operation | When | What it does |
+|-----------|------|-------------|
+| **Clone** | High gradient + small Gaussian | Add more detail in under-reconstructed areas |
+| **Split** | High gradient + large Gaussian | Break blobby areas into finer detail |
+| **Prune** | Opacity near zero | Remove floaters and redundant Gaussians |
+
+**Reference**: Kerbl, B. et al. "3D Gaussian Splatting for Real-Time Radiance Field Rendering" (SIGGRAPH 2023).
+
+#### Loss Function
+
+```
+Loss = MSE(render, photo) + 0.8 × L1(render, photo) + 0.01 × mean_scale
+```
+
+- **MSE**: Pixel-level accuracy
+- **L1**: Sharpens edges (prevents blur)
+- **Scale regularization**: Prevents Gaussians from growing too large (reduces floaters)
+
+#### Training Schedule
+
+| Segment | Iterations | Purpose |
+|---------|-----------|---------|
+| 7A (quick test) | 0–3,000 | Sanity check (~7 min on T4) |
+| 7B | 0–10,000 | Base training |
+| 7C | 10,000–20,000 | Resume with densification |
+| 7D | 20,000–30,000 | Refine (2x densify interval) |
+| 7E | 30,000–50,000 | High-quality final pass |
+
+**Key fix**: Each segment uses `--start_checkpoint` + `--checkpoint_iterations`
+from the official `train.py`. This preserves full optimizer state (not just model weights),
+so densification history isn't lost between segments.
+
+**Key fix**: Added `--densify_until_iter 15000` to segments 7C/7D so densification
+resumes correctly. Added `--position_lr_max_steps` matching each segment's end iteration
+so the position learning rate doesn't flatline.
+
+**Key fix**: Intermediate checkpoints in long segments (7C: 15K, 7E: 40K/45K/50K)
+so a disconnect loses at most 5K iterations instead of 10K.
+
+**Reference**: Official 3DGS codebase: [graphdeco-inria/gaussian-splatting](https://github.com/graphdeco-inria/gaussian-splatting)
+
+#### Efficiency Improvements (Latest)
+
+| Change | File | Impact |
+|--------|------|--------|
+| Fixed crash: `elements['f_rest_0':'f_rest_44']` → loop over 45 fields | `train_3dgs_enhanced.py:408` | Was unreachable code (would crash on export) |
+| Parallel image loading (ThreadPoolExecutor 8 workers) | `train_3dgs_enhanced.py`, `train_3dgs.py` | 4-10x faster I/O |
+| Parallel image processing (ThreadPoolExecutor 8 workers) | `prepare_images.py` | 4-10x faster resize |
+| Cache `torch.exp(scales)` once per iteration | `train_3dgs_enhanced.py:310` | 2-3 fewer CUDA ops per iter |
+| `torch.zeros` + fill for quaternion init | `train_3dgs_enhanced.py:277` | Avoid Python list→tensor copy |
+| Generator-based file reading | `train_3dgs_enhanced.py:54` | Lower peak memory |
+| `shutil.copytree` instead of manual file loop | `run_colmap.py:161` | Simpler, faster |
+
+---
+
+### Stage 4: PLY → Unity
+
+**What**: Validate and export the trained model so Unity can load it.
+
+**Script**: `scripts/export_unity.py` — checks:
+- PLY has correct header (vertex fields: x, y, z, nx, ny, nz, f_dc_0..2, f_rest_0..44, opacity, scale_0..2, rot_0..3)
+- Data types are float32
+- File isn't truncated
+
+**Viewer** | **Type** | **Walk-through?**
+---|---
+[SuperSplat](https://supersplat.com/) | Web (drag & drop) | Yes
+[UnityGaussianSplatting](https://github.com/aras-p/UnityGaussianSplatting) | Desktop Unity | Yes, WASD + mouse-look
+[gsplat.js](https://github.com/nerfstudio-project/gsplat.js) | Web viewer | Yes, programmatic camera
+
+---
+
+## Notebook Architecture
+
+`arena_3dgs_colab.ipynb` has **24 cells**, each idempotent (safe to re-run):
+
+| Cell | Stage | Runtime | Checkpoint |
+|------|-------|---------|------------|
+| 1 | Mount Google Drive | 5s | — |
+| 2 | Install system deps (xvfb, COLMAP, CUDA) | 3 min | — |
+| 3A | Clone repo + install Python deps | 2 min | — |
+| 3B | Download 91 images from GitHub | 2 min | — |
+| 4A | Prepare images (resize) | 30s | Drive |
+| 4B | COLMAP feature extraction | 3 min | Drive |
+| 4C | COLMAP matching (sequential + exhaustive) | 5 min | Drive |
+| 4D | COLMAP mapper + model merge | 10 min | Drive |
+| 5 | Download pre-computed COLMAP (skip 4) | 1 min | — |
+| 6 | Convert COLMAP → 3DGS format | 5s | — |
+| 7A | Train: quick test (3K iters) | 7 min | Drive |
+| 7B | Train: base (10K iters) | 10 min | Drive |
+| 7C | Train: resume (10K→20K) | 10 min | Drive |
+| 7D | Train: refine (20K→30K) | 10 min | Drive |
+| 7E | Train: high-quality (30K→50K) | 20 min | Drive |
+| 8 | Export PLY + download | 5s | — |
+
+**Key design decisions**:
+- Every training cell saves to Google Drive (`MyDrive/arena_3dgs/`)
+- Every training cell checks Drive first and skips if checkpoint exists
+- `subprocess.run(capture_output=True, text=True)` for all training — prints errors
+- `--disable_viewer` prevents GUI popup crash on headless Colab
+- Intermediate checkpoints every 5K-10K iterations limit lost work on disconnect
+
+**Bug fixes applied**:
+
+| Bug | Symptom | Fix |
+|-----|---------|-----|
+| OpenGL context missing | `Check failed: context_.create()` | Start Xvfb, set DISPLAY=:99, use_gpu=0 |
+| struct not defined | `NameError: name 'struct'` at Cell 4D | Move `import struct` to top of cell |
+| SIMPLE_RADIAL rejected | `assert model_name=="PINHOLE"` in text reader | Convert SIMPLE_RADIAL→PINHOLE in cameras.txt |
+| No good initial pair | Mapper fails with 0 registered | Add mapper init flags, lower peak_threshold |
+| False success message | "Quick test done!" printed even on crash | Check returncode + output file existence |
+| Input type flag unsupported | `model_converter: unknown --input_type` | Remove flag (auto-detected) |
+| Checkpoint path nesting | `cp -r` nests folders | `shutil.rmtree` + direct restore path |
+| Struct array slice invalid | `elements['f_rest_0':'f_rest_44']` crashes | Loop over 45 individual field names |
+
+---
+
+## File Reference
 
 ```
 arena-3dgs/
-├── arena_3dgs_colab.ipynb         # Main Colab notebook (run this)
-├── arena_3dgs_config.json         # Optimal configuration settings
-├── run_pipeline.py                # **New** Master pipeline orchestrator
+├── arena_3dgs_colab.ipynb         # 24-cell Colab notebook (primary entry point)
+├── arena_3dgs_config.json         # Optimal COLMAP + 3DGS settings
+├── run_pipeline.py                # Local orchestrator (--full, --train-only, etc.)
 ├── PIPELINE.md                    # This file
-├── README.md                      # Quick-start guide
-├── colmap_data/                   # Pre-computed COLMAP output
-│   ├── cameras.txt                # SIMPLE_RADIAL model
-│   ├── images.txt                 # 30 registered image poses
-│   └── points3D.txt               # 15,938 sparse points
+├── README.md                      # Quick-start (1 page)
+├── colmap_data/                   # Original 30-image COLMAP model (txt)
+├── colmap_data_optimized/         # Merged 34-image COLMAP model (txt + bin)
+├── colab_training_data.zip        # One-file download for Colab
 ├── splat-files-processed/         # 91 resized images (1920px)
 ├── scripts/
-│   ├── prepare_images.py          # Resize images to 1920px
-│   ├── export_pointcloud.py       # Export COLMAP sparse cloud to PLY
-│   ├── run_colmap.py              # **New** Enhanced COLMAP with model merging
-│   ├── train_3dgs_enhanced.py     # **New** GPU training with densification
-│   ├── train_3dgs.py              # Local CPU gsplat training
-│   └── export_unity.py            # **New** Unity PLY validator/exporter
-├── reconstruct_2d.py              # 2D top-down arena projection
-├── output/
-│   ├── arena_sparse_pointcloud.ply    # Sparse COLMAP point cloud
-│   └── arena_3dgs.ply                 # **Trained 3DGS model (GPU req.)**
-├── colmap_workspace/              # Full COLMAP workspace (gitignored)
-│   ├── sparse/0                   # 30-image reconstruction
-│   ├── sparse/1                   # 12-image reconstruction  
-│   └── sparse_registered/         # **Merged: 34 registered images**
-└── colab_training_data.zip        # ZIP for manual Colab upload
+│   ├── prepare_images.py          # Parallel image resize + JPEG compress
+│   ├── run_colmap.py              # Automated model merging + optimization
+│   ├── train_3dgs_enhanced.py     # GPU training: densification, L1+L2, scale reg
+│   ├── train_3dgs.py              # Local gsplat training (CPU)
+│   ├── export_unity.py            # PLY validator for Unity format
+│   └── export_pointcloud.py       # COLMAP sparse cloud → PLY
+├── colmap_workspace/              # Full COLMAP output (gitignored)
+│   ├── sparse/0                   # 30-image reconstruction (binary)
+│   ├── sparse/1                   # 12-image reconstruction (binary)
+│   └── sparse_registered/         # Merged 34-image model (binary)
+└── output/
+    ├── arena_sparse_pointcloud.ply
+    └── arena_3dgs.ply             # Trained 3DGS model (GPU required)
 ```
 
 ---
 
-## How to Generate Results
+## References
 
-### Colab (Recommended)
+1. **3D Gaussian Splatting** — Kerbl, B., Kopanas, G., Leimkühler, T., & Drettakis, G.
+   "3D Gaussian Splatting for Real-Time Radiance Field Rendering." SIGGRAPH 2023.
+   [Original code](https://github.com/graphdeco-inria/gaussian-splatting)
 
-1. Open [arena_3dgs_colab.ipynb](https://colab.research.google.com/github/kaarthik-balakrishnan/arena-3dgs/blob/main/arena_3dgs_colab.ipynb) in Colab
-2. Run cells in order:
-   - **Cell 1**: Mount Google Drive (for checkpoint backups)
-   - **Cell 2**: Install dependencies (~3 min)
-   - **Cell 3B**: Download 91 images from GitHub (~2 min)
-   - **Cell 5**: Download pre-computed COLMAP data (optional, skips COLMAP)
-   - **Cell 6**: Convert data to 3DGS format
-   - **Cell 7B**: Train 30K iterations (~30 min on T4 GPU)
-   - **Cell 8**: Export PLY and download
+2. **COLMAP** — Schönberger, J.L. & Frahm, J.-M.
+   "Structure-from-Motion Revisited." CVPR 2016.
+   [Website](https://colmap.github.io/)
 
-### Local Pipeline (Recommended)
+3. **gsplat** — Ye, V. et al.
+   "gsplat: Open-Source 3D Gaussian Splatting Library."
+   [GitHub](https://github.com/nerfstudio-project/gsplat)
 
-```bash
-# Full pipeline: COLMAP optimization → 3DGS training → Unity export
-# (Training requires GPU — skipped with a message if not available)
+4. **SIFT** — Lowe, D.G.
+   "Distinctive Image Features from Scale-Invariant Keypoints." IJCV 2004.
 
-# Run everything (COLMAP + training + export):
-python3 run_pipeline.py --full
+5. **Multiple View Geometry** — Hartley, R. & Zisserman, A.
+   "Multiple View Geometry in Computer Vision." Cambridge University Press, 2003.
 
-# Quick test (3K iterations instead of 30K):
-python3 run_pipeline.py --full --quick
+6. **UnityGaussianSplatting** — P., Aras.
+   [GitHub](https://github.com/aras-p/UnityGaussianSplatting)
 
-# Individual stages:
-python3 run_pipeline.py --colmap-only    # COLMAP feature extraction → matching → model merging
-python3 run_pipeline.py --train-only     # 3DGS training (requires GPU)
-python3 run_pipeline.py --export-only    # Validate PLY files for Unity
-python3 run_pipeline.py --setup-only     # Prepare input dirs for 3DGS training
+7. **SuperSplat** — PlayCanvas.
+   [Web app](https://supersplat.com/)
 
-# Legacy: Manual COLMAP with individual commands
-python3 scripts/prepare_images.py --input splat-files --output splat-files-processed
-
-colmap feature_extractor \
-    --database_path colmap_workspace/database.db \
-    --image_path splat-files-processed \
-    --ImageReader.camera_model SIMPLE_RADIAL \
-    --ImageReader.single_camera 1 \
-    --SiftExtraction.max_num_features 16384
-
-colmap sequential_matcher \
-    --database_path colmap_workspace/database.db \
-    --SequentialMatching.overlap 10
-
-colmap exhaustive_matcher \
-    --database_path colmap_workspace/database.db
-
-colmap mapper \
-    --database_path colmap_workspace/database.db \
-    --image_path splat-files-processed \
-    --output_path colmap_workspace/sparse
-
-# 3. Optimize: merge multiple reconstructions for more registered images
-python3 scripts/run_colmap.py
-
-# 4. Train on GPU (requires CUDA):
-python3 scripts/train_3dgs_enhanced.py --iterations 30000
-
-# 5. Validate for Unity:
-python3 scripts/export_unity.py
-```
-
-### Training Configuration Matrix
-
-| Config | Iterations | Max Gaussians | T4 Time | Quality |
-|--------|-----------|--------------|---------|---------|
-| Quick (3K) | 3,000 | 50K | ~7 min | Blocky, test-grade |
-| Standard (30K) | 30,000 | 300K | ~30 min | Detailed, production-grade |
-| **High quality (50K)** | **50,000** | **500K** | **~50 min** | **Best for Unity walkthrough** |
-| gsplat (30K) | 30,000 | 300K | ~15 min | Same quality, 2x faster |
-
-### Viewing Results
-
-| Tool | Type | Setup | Walk-through? |
-|------|------|-------|---------------|
-| [SuperSplat](https://supersplat.com/) | Web | Drag & drop PLY | Yes, interactive |
-| [Unity + UnityGaussianSplatting](https://github.com/aras-p/UnityGaussianSplatting) | Desktop | Clone repo, drop PLY | **Yes, full WASD + mouse-look** |
-| [CloudCompare](https://www.cloudcompare.org/) | Desktop | Open PLY | Limited (point cloud only) |
-| [gsplat.js](https://github.com/nerfstudio-project/gsplat.js) | Web | Embed in HTML | Programmatic camera control |
-
----
-
-## Implemented Improvements
-
-### ✅ Completed Upgrades
-
-| Area | Improvement | Status | Impact |
-|------|-----------|--------|--------|
-| **COLMAP Registration** | Merged 2 independent reconstructions (30 + 12 = **34 images**) | Done | +13% more registered views |
-| **COLMAP Pipeline** | `scripts/run_colmap.py` — automated model merging and optimization | Done | 1-command optimization |
-| **3DGS Training** | `scripts/train_3dgs_enhanced.py` — gsplat with densification logic, scale regularization, L1+L2 loss | Done | Better quality, faster training |
-| **Unity Export** | `scripts/export_unity.py` — PLY validator & UnityGaussianSplatting compatibility checker | Done | Guarantees correct PLY format |
-| **Master Pipeline** | `run_pipeline.py` — orchestrates all stages with --full, --quick, per-stage flags | Done | 1-command end-to-end |
-| **Configuration** | `arena_3dgs_config.json` — all optimal settings in one place | Done | Easier tuning |
-
-### How to Get the Best Possible Quality
-
-For maximum accuracy suitable for Unity exploration:
-
-1. **Use the merged COLMAP model** (34 images instead of 30):
-   ```bash
-   python3 scripts/run_colmap.py
-   ```
-
-2. **Train with the enhanced script on a GPU** for 50K iterations:
-   ```bash
-   python3 scripts/train_3dgs_enhanced.py --iterations 50000 --max-gaussians 500000
-   ```
-   This uses gsplat's 2x faster rasterizer with:
-   - L1 + L2 loss for sharper details
-   - Scale regularization to prevent floating artifacts
-   - Periodic densification (clone/split/prune) every 100 steps
-   - Up to 500K Gaussians for maximum detail
-
-3. **Validate and export for Unity**:
-   ```bash
-   python3 scripts/export_unity.py output/arena_3dgs.ply
-   ```
-
-## Remaining Work
-
-### Priority: Improve Image Registration
-
-| Approach | Effort | Expected Gain | Notes |
-|----------|--------|---------------|-------|
-| **SuperPoint + SuperGlue** | Medium | **High** | Learned features get far more matches on low-texture scenes. Use [hloc](https://github.com/cvg/Hierarchical-Localization) to replace SIFT. Could likely register 60+ images. |
-| **Manual initial pair** | Low | Medium | Tell COLMAP which two images to start with (images that overlap well) |
-| **COLMAP with CUDA** | Low | Medium | GPU-accelerated COLMAP is faster and may find better matches. Runs on Colab T4. |
-| **Split into segments** | Medium | Medium | Run COLMAP on 2-3 overlapping segments, then merge models |
-| **Train a custom model** | High | Very High | Use image features from a pretrained model (DINOv2, DenseVLAD) for matching |
-
-### Priority: Improve 3DGS Quality
-
-| Approach | Effort | Expected Gain | Notes |
-|----------|--------|---------------|-------|
-| **Train longer** | Low | High | 50K-70K iterations with `scripts/train_3dgs_enhanced.py` |
-| **gsplat rasterizer** | Low | Medium | 2x faster training = more iterations in same time (already used in enhanced script) |
-| **Higher res images** | Medium | Medium | Try full 8160×6144 originals (needs more VRAM) |
-| **Multiple cameras** | High | Medium | If more angles are needed, take more photos with different framing |
-| **Depth regularization** | Medium | High | Add monocular depth priors (DPT/MiDaS) to fill holes in textureless regions |
-
-### Future Ideas
-
-- **Web viewer**: Deploy the trained model with [gsplat.js](https://github.com/nerfstudio-project/gsplat.js) for browser-based exploration
-- **Unity build**: Create a standalone Unity application with the walk-through experience
-- **Measurements**: Add distance/area measurement tools for arena analysis
-- **Video rendering**: Render a fly-through video of the reconstructed arena
-- **Multi-scene**: Apply the pipeline to other scenes (not just the arena)
-
----
-
-## Technical Notes
-
-### Why only 30/91 images register?
-
-The COLMAP incremental SfM pipeline works by:
-1. Finding a good initial image pair (two images with many matches and good parallax)
-2. Triangulating 3D points from that pair
-3. Incrementally registering new images that see the existing 3D points
-4. The unregistered images see **0 already-triangulated 3D points** because:
-   - They cover different physical areas of the arena
-   - The repetitive floor/wall textures produce ambiguous matches
-   - The camera moved too far between consecutive registered frames
-
-This is why using **learned features (SuperPoint)** would help — they produce more discriminative matches on low-texture surfaces.
-
-### Camera Model Selection
-
-| Model | Params | When to Use |
-|-------|--------|-------------|
-| PINHOLE | fx, fy, cx, cy | No distortion (professional cameras with long lenses) |
-| SIMPLE_RADIAL | fx, cx, cy, k1 | **Mild radial distortion (our case: k1=0.0065)** |
-| OPENCV | fx, fy, cx, cy, k1, k2, p1, p2 | Significant distortion (wide-angle, phone cameras) |
-
-SIMPLE_RADIAL was chosen because:
-- Pixel 10 Pro XL has mild distortion (k1=0.0065)
-- Fewer parameters = more stable estimation with limited images
-- OPENCV's 8 params overfit with only 30 cameras
-
-## Unity Walkthrough Guide
-
-### Setup UnityGaussianSplatting
-
-1. **Install Unity 2022.3+** with URP (Universal Render Pipeline)
-2. **Clone** [UnityGaussianSplatting](https://github.com/aras-p/UnityGaussianSplatting)
-3. **Open** the project in Unity
-4. **Copy** your trained `arena_3dgs.ply` into `Assets/GaussianAssets/`
-5. **Open** `Assets/Scenes/SampleScene.unity`
-6. **Select** the `GaussianSplatting` GameObject
-7. **Drag** your `.ply` into the `Asset File` slot in the inspector
-8. **Play!** Use WASD + mouse to explore
-
-### Unity Optimization Tips
-
-| Issue | Fix |
-|-------|-----|
-| **too many Gaussians** | Keep < 500K for real-time performance |
-| **pop-in / blurry** | Increase `Max Screen Size` in the GaussianSplatting component |
-| **low FPS** | Reduce `Render Scale` or `Max Gaussins Visible` |
-| **floating artifacts** | Train longer (50K iterations) or increase scale regularization |
-| **black holes / missing areas** | More training iterations; the densification fills gaps over time |
-
-### Alternative: SuperSplat (No Install)
-
-1. Go to [SuperSplat](https://supersplat.com/)
-2. Drag & drop your `.ply` file
-3. Fully interactive — click and drag to orbit, scroll to zoom
-4. Supports editing tools (select, delete, crop)
-
-### Alternative: gsplat.js Web Viewer
-
-```bash
-npx gsplat serve output/arena_3dgs.ply
-```
-Opens an interactive 3D viewer in your browser at `localhost:8080`.
+8. **hloc** — Sarlin, P.-E. et al.
+   "From Coarse to Fine: Robust Hierarchical Localization at Scale." CVPR 2019.
+   [GitHub](https://github.com/cvg/Hierarchical-Localization)

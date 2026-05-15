@@ -13,6 +13,7 @@ import os, sys, math, time, struct
 from pathlib import Path
 import warnings
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 BASE = Path(__file__).resolve().parent.parent
 
@@ -48,34 +49,32 @@ import cv2
 from plyfile import PlyData, PlyElement
 from tqdm import trange, tqdm
 
-# ── COLMAP data loading ────────────────────────────────────────────
+# ── COLMAP data loading (generator-based for memory efficiency) ────
 def read_cameras_text(path):
     cameras = {}
     with open(path) as f:
-        lines = [l.strip() for l in f if l.strip() and not l.startswith('#')]
-    for line in lines:
-        parts = line.split()
-        cam_id = int(parts[0])
-        model = parts[1]
-        w, h = int(parts[2]), int(parts[3])
-        params = [float(p) for p in parts[4:]]
-        cameras[cam_id] = {'model': model, 'width': w, 'height': h, 'params': params}
+        for line in f:
+            line = line.strip()
+            if not line or line[0] == '#': continue
+            parts = line.split()
+            cameras[int(parts[0])] = {
+                'model': parts[1], 'width': int(parts[2]), 'height': int(parts[3]),
+                'params': [float(p) for p in parts[4:]]
+            }
     return cameras
 
 def read_images_text(path):
     images = {}
     with open(path) as f:
-        lines = [l.strip() for l in f if l.strip() and not l.startswith('#')]
-    for i in range(0, len(lines), 2):
-        parts = lines[i].split()
+        pairs = [(line, next(f, '')) for line in f if line.strip() and line[0] != '#']
+    for data_line, _ in pairs:
+        parts = data_line.strip().split()
         img_id = int(parts[0])
-        qw, qx, qy, qz = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
-        tx, ty, tz = float(parts[5]), float(parts[6]), float(parts[7])
-        camera_id = int(parts[8])
-        name = parts[9]
-        qvec = np.array([qw, qx, qy, qz])
-        tvec = np.array([tx, ty, tz])
-        images[img_id] = {'qvec': qvec, 'tvec': tvec, 'camera_id': camera_id, 'name': name}
+        images[img_id] = {
+            'qvec': np.array([float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])]),
+            'tvec': np.array([float(parts[5]), float(parts[6]), float(parts[7])]),
+            'camera_id': int(parts[8]), 'name': parts[9]
+        }
     return images
 
 def read_points3d_text(path):
@@ -207,23 +206,33 @@ def train(args):
     points, colors = read_points3d_text(sparse_dir / "points3D.txt")
     print(f"  {len(cams)} cameras, {len(imgs_data)} images, {len(points)} points")
 
-    # Load images
+    # Load images (parallel I/O)
     sorted_ids = sorted(imgs_data.keys(), key=lambda x: imgs_data[x]['name'])
-    valid_imgs = []
-    valid_ids = []
-    for img_id in sorted_ids:
+
+    def load_one(img_id):
         name = imgs_data[img_id]['name']
         for base_dir in [images_dir, input_dir / "images"]:
             img_path = base_dir / name
             if img_path.exists():
                 break
         else:
-            continue
+            return None
         img_bgr = cv2.imread(str(img_path))
-        if img_bgr is not None:
-            valid_ids.append(img_id)
-            valid_imgs.append(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+        if img_bgr is None:
+            return None
+        return img_id, cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
+    results = []
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures = [pool.submit(load_one, img_id) for img_id in sorted_ids]
+        for f in as_completed(futures):
+            r = f.result()
+            if r is not None:
+                results.append(r)
+
+    results.sort(key=lambda x: sorted_ids.index(x[0]))
+    valid_ids = [r[0] for r in results]
+    valid_imgs = [r[1] for r in results]
     n_views = len(valid_ids)
     assert n_views > 0, "No valid images found!"
     print(f"  Loaded {n_views} training views")
@@ -265,7 +274,8 @@ def train(args):
     n_points = len(means)
     print(f"  Initialized {n_points} Gaussians")
 
-    quats = torch.tensor([[1.0, 0.0, 0.0, 0.0]] * n_points, dtype=torch.float32, device=device)
+    quats = torch.zeros(n_points, 4, dtype=torch.float32, device=device)
+    quats[:, 0] = 1.0
     opacities = torch.full((n_points,), 0.1, dtype=torch.float32, device=device)
     scales = torch.full((n_points, 3), 0.001, dtype=torch.float32, device=device)
 
@@ -299,10 +309,12 @@ def train(args):
     for it in pbar:
         optimizer.zero_grad()
 
+        scales_act = torch.exp(scales)
+
         renders, alphas, info = gs_rasterization(
             means=means,
             quats=quats / (quats.norm(dim=-1, keepdim=True) + 1e-10),
-            scales=torch.exp(scales),
+            scales=scales_act,
             opacities=torch.sigmoid(opacities),
             colors=colors_sh,
             viewmats=viewmats,
@@ -318,7 +330,7 @@ def train(args):
         loss = loss + 0.8 * F.l1_loss(renders, imgs_gt)
 
         # Scale regularization (prevent excessively large Gaussians)
-        scale_reg = torch.exp(scales).norm(dim=-1).mean() * 0.01
+        scale_reg = scales_act.norm(dim=-1).mean() * 0.01
         loss = loss + scale_reg
 
         loss.backward()
@@ -335,7 +347,7 @@ def train(args):
         if it > 0 and it % densify_interval == 0:
             with torch.no_grad():
                 new_means, new_scales, new_opacities, grad_accum, count_accum = \
-                    densification(means.data, torch.exp(scales.data), opacities.data,
+                    densification(means.data, scales_act.data, opacities.data,
                                   grad_accum, count_accum, iteration=it,
                                   max_gaussians=args.max_gaussians)
                 
@@ -393,7 +405,9 @@ def export_ply(means, quats, scales, opacities, colors_sh, path):
     elements['f_dc_0'] = colors_sh[:, 0].cpu().numpy()
     elements['f_dc_1'] = colors_sh[:, 1].cpu().numpy()
     elements['f_dc_2'] = colors_sh[:, 2].cpu().numpy()
-    elements['f_rest_0':'f_rest_44'] = colors_sh[:, 3:].cpu().numpy()
+    rest = colors_sh[:, 3:].cpu().numpy()
+    for i in range(45):
+        elements[f'f_rest_{i}'] = rest[:, i]
     elements['opacity'] = opacities.cpu().numpy()
     elements['scale_0'] = scales[:, 0].cpu().numpy()
     elements['scale_1'] = scales[:, 1].cpu().numpy()

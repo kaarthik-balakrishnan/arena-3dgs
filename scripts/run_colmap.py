@@ -158,11 +158,7 @@ def align_and_merge():
 def copy_merged_to_output(best_model):
     if OUTPUT_MODEL.exists():
         shutil.rmtree(OUTPUT_MODEL)
-    OUTPUT_MODEL.mkdir(parents=True)
-    
-    for f in best_model.iterdir():
-        if f.is_file():
-            shutil.copy2(f, OUTPUT_MODEL / f.name)
+    shutil.copytree(best_model, OUTPUT_MODEL)
     
     # Also convert to txt for compatibility
     txt_out = OUTPUT_MODEL / "txt"
