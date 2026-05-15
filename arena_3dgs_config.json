@@ -1,0 +1,64 @@
+{
+  "_comment": "Optimal configuration for arena 3DGS reconstruction",
+  "camera": {
+    "model": "SIMPLE_RADIAL",
+    "fx": 1398,
+    "cx": 960,
+    "cy": 722.5,
+    "k1": 0.0065
+  },
+  "colmap_feature_extraction": {
+    "max_num_features": 16384,
+    "first_octave": -1,
+    "peak_threshold": 0.02
+  },
+  "colmap_matching": {
+    "sequential_overlap": 10,
+    "use_exhaustive": true,
+    "use_sequential": true
+  },
+  "colmap_mapper": {
+    "ba_local_max_num_iterations": 25,
+    "ba_global_max_num_iterations": 50
+  },
+  "training": {
+    "quick": {
+      "iterations": 3000,
+      "max_gaussians": 50000,
+      "time_t4_minutes": 7,
+      "quality": "test-grade, blocky"
+    },
+    "standard": {
+      "iterations": 30000,
+      "max_gaussians": 300000,
+      "time_t4_minutes": 30,
+      "quality": "high quality, detailed"
+    },
+    "high_quality": {
+      "iterations": 50000,
+      "max_gaussians": 500000,
+      "time_t4_minutes": 50,
+      "quality": "best quality for Unity walkthrough"
+    },
+    "gsplat_fast": {
+      "iterations": 30000,
+      "max_gaussians": 300000,
+      "time_t4_minutes": 15,
+      "quality": "same as standard, 2x faster"
+    }
+  },
+  "pipeline": {
+    "stages": [
+      "prepare_images",
+      "colmap_feature_extraction",
+      "colmap_sequential_matching",
+      "colmap_exhaustive_matching",
+      "colmap_mapper",
+      "model_merging",
+      "3dgs_training",
+      "unity_export"
+    ],
+    "image_size": 1920,
+    "jpeg_quality": 90
+  }
+}

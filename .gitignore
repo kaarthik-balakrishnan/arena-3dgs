@@ -11,6 +11,9 @@ env/
 # COLMAP workspace (large binary files)
 colmap_workspace/
 
+# Temporary training directories (auto-created by setup)
+gaussian-splatting/
+
 # Generated zip files
 *.zip
 
