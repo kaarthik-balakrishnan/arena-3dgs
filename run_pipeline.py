@@ -117,6 +117,25 @@ def stage_export():
 
     return run_script("export_unity.py")
 
+def stage_compression(args):
+    print("\n" + "=" * 60)
+    print("  STAGE 4: Post-Training Compression")
+    print("=" * 60)
+
+    ply_files = sorted(OUTPUT.glob("arena_3dgs.ply"))
+    if not ply_files:
+        ply_files = sorted(OUTPUT.glob("*.ply"))
+    if not ply_files:
+        print("  ERROR: No PLY files found in output/")
+        return False
+
+    ply_path = ply_files[-1]
+    quality = args.compress_quality
+    print(f"  Compressing: {ply_path.name} (quality: {quality})")
+
+    extra = [str(ply_path), "--quality", quality, "--output-dir", str(OUTPUT)]
+    return run_script("compress_splat.py", extra)
+
 def prepare_gaussian_splatting_input():
     """Set up the gaussian-splatting/input directory structure."""
     gs_dir = BASE / "gaussian-splatting"
@@ -170,10 +189,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python run_pipeline.py --full                  # Full pipeline
+  python run_pipeline.py --full                  # Full pipeline (incl. compress)
   python run_pipeline.py --full --quick          # Quick test (3K iterations)  
   python run_pipeline.py --colmap-only           # Only optimize COLMAP
   python run_pipeline.py --train-only            # Only train 3DGS
+  python run_pipeline.py --compress              # Compress trained PLY
+  python run_pipeline.py --compress --compress-quality low  # Aggressive compression
   python run_pipeline.py --export-only           # Validate PLY for Unity
   python run_pipeline.py --setup-only            # Prepare 3DGS input dir
         """
@@ -186,12 +207,17 @@ Examples:
     parser.add_argument("--setup-only", action="store_true", help="Only prepare input dirs")
     parser.add_argument("--iterations", type=int, default=30000, 
                         help="Training iterations (default: 30000)")
+    parser.add_argument("--compress", action="store_true",
+                        help="Run post-training compression (SH clustering + quantization)")
+    parser.add_argument("--compress-quality", "-cq", default="medium",
+                        choices=["very_high", "high", "medium", "low", "very_low"],
+                        help="Compression quality preset (default: medium)")
 
     args = parser.parse_args()
 
     # If no args, show help
     if not any([args.full, args.colmap_only, args.train_only, 
-                args.export_only, args.setup_only]):
+                args.export_only, args.setup_only, args.compress]):
         parser.print_help()
         print("\n  Current state:")
         
@@ -236,6 +262,9 @@ Examples:
 
     if args.export_only or args.full:
         stage_export()
+
+    if args.compress or args.full:
+        stage_compression(args)
 
     if args.full:
         print("\n" + "=" * 60)
