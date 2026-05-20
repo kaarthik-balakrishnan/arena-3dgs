@@ -46,15 +46,23 @@ BASE = Path.cwd()
 SCRIPTS = BASE / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 
+# Detect Colab runtime regardless of Drive mount status
+ON_COLAB = False
+try:
+    import google.colab  # noqa: F401
+    ON_COLAB = True
+except ImportError:
+    pass
+
 # Mount Google Drive (Colab only)
-DRIVE_MOUNT = Path('/content/drive')
-ON_COLAB = DRIVE_MOUNT.exists()
 if ON_COLAB:
-    print("Google Drive detected — mounting...")
+    DRIVE_MOUNT = Path('/content/drive')
+    print("Colab detected — mounting Drive...")
     from google.colab import drive
     drive.mount('/content/drive')
     WORKSPACE = DRIVE_MOUNT / 'MyDrive' / 'arena_3dgs'
 else:
+    DRIVE_MOUNT = None
     WORKSPACE = BASE / 'colmap_workspace'
 
 WORKSPACE.mkdir(parents=True, exist_ok=True)
@@ -180,7 +188,7 @@ else:
 IMAGE_DIR = BASE / 'splat-files-processed'
 
 # On Colab, download images from GitHub if not present
-if ON_COLAB and len(list(IMAGE_DIR.glob('*.jpg'))) < 50:
+if len(list(IMAGE_DIR.glob('*.jpg'))) < 50:
     print("Downloading 91 arena images from GitHub...")
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     # Generate all Chamber filenames from the naming convention
