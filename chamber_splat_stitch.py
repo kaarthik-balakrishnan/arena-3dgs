@@ -349,10 +349,14 @@ for p in sorted(IMAGE_DIR.glob('*.jpg')):
 by_chamber_raw, transitions, all_parsed = categorize_images(IMAGE_DIR)
 print_dataset_summary(by_chamber_raw, transitions)
 
-# Filter bad images
+# Exclude outside images (exterior shots don't help chamber reconstruction)
+for cid in list(by_chamber_raw.keys()):
+    by_chamber_raw[cid] = [i for i in by_chamber_raw[cid] if i['view'] != 'outside']
+
+# Filter bad images (lenient thresholds; let COLMAP decide on marginal cases)
 by_chamber, removed = filter_bad_images(
     by_chamber_raw, quality_scores,
-    brightness_range=(15, 240), min_sharpness=0.3,
+    brightness_range=(5, 250), min_sharpness=0.05,
 )
 print(f"\nFiltered: kept {sum(len(v) for v in by_chamber.values())} images, "
       f"removed {len(removed)}:")
