@@ -356,6 +356,23 @@ if 'per_chamber_colmap' in completed:
                 print(f"  Chamber {cid}: model dir not found, will re-run")
 else:
     chamber_models = {}
+
+    # Duplicate transition images to their target chamber so each transition
+    # image is processed in BOTH adjacent chambers' COLMAP runs. This ensures
+    # both models have 3D observations of the same physical points with the
+    # same SIFT descriptors, enabling robust cross-chamber matching.
+    n_dup = 0
+    for cid in list(by_chamber.keys()):
+        for img in by_chamber[cid][:]:
+            tgt = img.get('target')
+            if tgt is not None and tgt in by_chamber:
+                existing = {i['filename'] for i in by_chamber[tgt]}
+                if img['filename'] not in existing:
+                    by_chamber[tgt].append(img)
+                    n_dup += 1
+    if n_dup:
+        print(f"Added {n_dup} transition images to target chambers for bridge coverage")
+
     for cid in sorted(by_chamber.keys()):
         imgs = by_chamber[cid]
         print(f"\n{'='*60}")

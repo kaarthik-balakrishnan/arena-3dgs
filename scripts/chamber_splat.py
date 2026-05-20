@@ -653,8 +653,8 @@ def match_bridge_points(desc_X, pos_X, desc_Y, pos_Y,
 
 
 def compute_rigid_transform_ransac(matches, pos_X, pos_Y,
-                                   max_iters=5000, inlier_threshold=0.05,
-                                   min_inliers=6):
+                                   max_iters=5000, inlier_threshold=0.15,
+                                   min_inliers=4):
     if len(matches) < min_inliers:
         print(f"  Too few matches ({len(matches)}), need {min_inliers}")
         return None, [], []
@@ -739,38 +739,28 @@ def compute_chamber_transform(model_X, model_Y,
                               chamber_X_id, chamber_Y_id):
     pair = (min(chamber_X_id, chamber_Y_id), max(chamber_X_id, chamber_Y_id))
 
-    # Determine transition image patterns
-    fwd_marker = f'_Chamber{chamber_Y_id}'
-    rev_marker = f'_Chamber{chamber_X_id}'
+    # Collect ALL transition image names between these chambers from either model
+    trans_names = set()
+    for model in (model_X, model_Y):
+        for img_id, img in model['images'].items():
+            name = img['name']
+            cid_pat = f'Chamber{chamber_X_id}_'
+            other_pat = f'_Chamber{chamber_X_id}'
+            if name.startswith(cid_pat) and f'_Chamber{chamber_Y_id}' in name:
+                trans_names.add(name)
+            elif other_pat in name and name.startswith(f'Chamber{chamber_Y_id}_'):
+                trans_names.add(name)
 
-    # Images going FROM X to Y (showing Y's space, in X's model)
-    fwd_names = set()
-    for img_id, img in model_X['images'].items():
-        name = img['name']
-        if name.startswith(f'Chamber{chamber_X_id}_') and fwd_marker in name:
-            fwd_names.add(name)
-
-    # Images going FROM Y to X (showing X's space, in Y's model)
-    rev_names = set()
-    for img_id, img in model_Y['images'].items():
-        name = img['name']
-        if name.startswith(f'Chamber{chamber_Y_id}_') and rev_marker in name:
-            rev_names.add(name)
-
-    if not fwd_names:
-        print(f"  No transition images from Chamber{chamber_X_id}→Chamber{chamber_Y_id}")
-        fwd_names = set()
-    if not rev_names:
-        print(f"  No transition images from Chamber{chamber_Y_id}→Chamber{chamber_X_id}")
-        rev_names = set()
-
-    if not fwd_names and not rev_names:
-        print(f"  No transition images between {pair}")
+    if not trans_names:
+        print(f"  No transition images between ({pair[0]}, {pair[1]}) "
+              f"in either model")
         return None, []
 
-    # Extract bridge points
-    bridge_X, _ = get_bridge_point_ids(model_X, fwd_names)
-    bridge_Y, _ = get_bridge_point_ids(model_Y, rev_names)
+    print(f"  Transition images found: {len(trans_names)}")
+
+    # Extract bridge points from both models using ALL transition images
+    bridge_X, _ = get_bridge_point_ids(model_X, trans_names)
+    bridge_Y, _ = get_bridge_point_ids(model_Y, trans_names)
 
     # Get descriptors and positions
     desc_X = get_bridge_descriptors(model_X, bridge_X)
@@ -816,7 +806,7 @@ def compute_chamber_transform(model_X, model_Y,
 
     # Match descriptors
     matches = match_bridge_points(desc_X, pos_X, desc_Y, pos_Y)
-    if len(matches) < 6:
+    if len(matches) < 4:
         print(f"  Too few matches ({len(matches)}) for alignment")
         return None, []
 
