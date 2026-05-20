@@ -435,16 +435,21 @@ def run_colmap_feature_extraction(database_path, image_path, options=None):
         "--SiftExtraction.max_num_features", str(opts.get('max_features', 32768)),
         "--SiftExtraction.first_octave", "-1",
         "--SiftExtraction.peak_threshold", str(opts.get('peak_threshold', 0.02)),
+        "--SiftExtraction.use_gpu", "0",
     ]
-    print(f"  Running: colmap feature_extractor ...")
+    print(f"  Running: colmap feature_extractor (CPU SIFT) ...")
     ret = subprocess.run(cmd)
     if ret.returncode != 0:
         raise RuntimeError(f"Feature extraction failed (code {ret.returncode})")
 
 
 def run_colmap_exhaustive_matching(database_path):
-    cmd = ["colmap", "exhaustive_matcher", "--database_path", str(database_path)]
-    print(f"  Running: colmap exhaustive_matcher ...")
+    cmd = [
+        "colmap", "exhaustive_matcher",
+        "--database_path", str(database_path),
+        "--SiftMatching.use_gpu", "0",
+    ]
+    print(f"  Running: colmap exhaustive_matcher (CPU) ...")
     ret = subprocess.run(cmd)
     if ret.returncode != 0:
         raise RuntimeError(f"Exhaustive matching failed (code {ret.returncode})")
@@ -541,12 +546,12 @@ def run_chamber_colmap(chamber_id, image_paths, workspace,
         # Also convert to text format for portable access
         txt_dir = model_dir / 'txt'
         txt_dir.mkdir(exist_ok=True)
-        os.system(
-            f"colmap model_converter "
-            f"--input_path {model_dir} "
-            f"--output_path {txt_dir} "
-            f"--output_type TXT"
-        )
+        subprocess.run([
+            "colmap", "model_converter",
+            "--input_path", str(model_dir),
+            "--output_path", str(txt_dir),
+            "--output_type", "TXT",
+        ])
 
         # Count registered images
         with open(model_dir / 'images.bin', 'rb') as f:
@@ -734,31 +739,23 @@ def compute_chamber_transform(model_X, model_Y,
                               chamber_X_id, chamber_Y_id):
     pair = (min(chamber_X_id, chamber_Y_id), max(chamber_X_id, chamber_Y_id))
 
-    # Determine transition image names
-    if chamber_X_id < chamber_Y_id:
-        fwd_name_pat = f'Chamber{chamber_X_id}_'
-        fwd_name_suffix = f'_Chamber{chamber_Y_id}.jpg'
-        rev_name_pat = f'Chamber{chamber_Y_id}_'
-        rev_name_suffix = f'_Chamber{chamber_X_id}.jpg'
-    else:
-        fwd_name_pat = f'Chamber{chamber_X_id}_'
-        fwd_name_suffix = f'_Chamber{chamber_Y_id}.jpg'
-        rev_name_pat = f'Chamber{chamber_Y_id}_'
-        rev_name_suffix = f'_Chamber{chamber_X_id}.jpg'
+    # Determine transition image patterns
+    fwd_marker = f'_Chamber{chamber_Y_id}'
+    rev_marker = f'_Chamber{chamber_X_id}'
 
     # Images going FROM X to Y (showing Y's space, in X's model)
     fwd_names = set()
     for img_id, img in model_X['images'].items():
-        if img['name'].endswith(fwd_name_suffix) and \
-           fwd_name_pat in img['name']:
-            fwd_names.add(img['name'])
+        name = img['name']
+        if name.startswith(f'Chamber{chamber_X_id}_') and fwd_marker in name:
+            fwd_names.add(name)
 
     # Images going FROM Y to X (showing X's space, in Y's model)
     rev_names = set()
     for img_id, img in model_Y['images'].items():
-        if img['name'].endswith(rev_name_suffix) and \
-           rev_name_pat in img['name']:
-            rev_names.add(img['name'])
+        name = img['name']
+        if name.startswith(f'Chamber{chamber_Y_id}_') and rev_marker in name:
+            rev_names.add(name)
 
     if not fwd_names:
         print(f"  No transition images from Chamber{chamber_X_id}→Chamber{chamber_Y_id}")

@@ -129,14 +129,13 @@ except (FileNotFoundError, subprocess.CalledProcessError):
     pass
 
 if not colmap_available and ON_COLAB:
-    print("Installing COLMAP (CUDA binary for T4 GPU)...")
-    COLMAP_VER = "3.9.1"
-    url = (f"https://github.com/colmap/colmap/releases/download/"
-           f"{COLMAP_VER}/colmap-{COLMAP_VER}-linux-cuda-x86_64.tar.gz")
-    subprocess.run(['wget', '-q', url], check=True)
-    subprocess.run(['tar', '-xzf', f'colmap-{COLMAP_VER}-linux-cuda-x86_64.tar.gz',
-                    '-C', '/usr/local/'], check=True)
-    subprocess.run(['rm', f'colmap-{COLMAP_VER}-linux-cuda-x86_64.tar.gz'])
+    print("Installing COLMAP (apt-get, CPU SIFT mode)...")
+    print("  GPU used for 3DGS training; COLMAP uses CPU to avoid CUDA driver mismatch")
+    subprocess.run(['apt-get', 'update', '-qq'], check=True)
+    subprocess.run(['apt-get', 'install', '-y', '-qq', 'colmap'], check=True)
+    # Don't use GPU for SIFT (avoids CUDA version mismatch crash on Colab T4)
+    subprocess.run(['colmap', 'help'], capture_output=True)
+    colmap_available = True
     # Verify
     result = subprocess.run(['colmap', 'help'], capture_output=True, text=True)
     print(result.stdout[:200])
@@ -579,7 +578,7 @@ print(f"\n✅ Cell 6 complete: unified model with "
 # Prepares the `gaussian-splatting/input/` directory with images + COLMAP model.
 
 # %%
-if HAS_GPU or DRIVE_MOUNT.exists():
+if HAS_GPU or ON_COLAB:
     print("Setting up 3DGS training input...")
     d = setup_3dgs_input(unified, IMAGE_DIR, WORKSPACE / 'unified_3dgs_input')
     print(f"Input ready at: {d}")
