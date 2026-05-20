@@ -98,16 +98,16 @@ def qvec2rotmat(qvec):
 
 # ── Adaptive density control ───────────────────────────────────────
 @torch.no_grad()
-def densification(means, scales, opacities, grads, grad_accum, count_accum,
+def densification(means, scales, opacities, grad_accum, count_accum,
                   densify_grad_threshold=0.0002, densify_size_threshold=0.01,
                   opacity_reset_interval=3000, prune_opacity_threshold=0.005,
                   iteration=0, max_gaussians=500000):
     if iteration < 500:
-        return means, scales, opacities, grads, grad_accum, count_accum
+        return means, scales, opacities, grad_accum, count_accum
 
     n = len(means)
     if n >= max_gaussians:
-        return means, scales, opacities, grads, grad_accum, count_accum
+        return means, scales, opacities, grad_accum, count_accum
 
     grad_avg = grad_accum / count_accum.clamp(min=1)
     grad_norm = grad_avg.norm(dim=-1)
@@ -157,7 +157,6 @@ def densification(means, scales, opacities, grads, grad_accum, count_accum,
 
     # Reset gradient accumulators
     n_final = len(means)
-    grads = torch.zeros(n_final, 3, device=means.device)
     grad_accum = torch.zeros(n_final, 3, device=means.device)
     count_accum = torch.zeros(n_final, 1, device=means.device)
 
@@ -167,7 +166,7 @@ def densification(means, scales, opacities, grads, grad_accum, count_accum,
         opacities = torch.clamp(opacities, max=0.01)
         opacities = torch.log(opacities / (1 - opacities + 1e-10))
 
-    return means, scales, opacities, grads, grad_accum, count_accum
+    return means, scales, opacities, grad_accum, count_accum
 
 
 # ── Main training ──────────────────────────────────────────────────
