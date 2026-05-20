@@ -411,6 +411,61 @@ else:
 print(f"\n✅ Cell 4 complete: {len(chamber_models)} chambers processed")
 
 # %% [markdown]
+# ## Cell 4b: Per-Chamber 3DGS Training
+# Trains individual 3DGS models for each chamber's COLMAP model so you can
+# visualize each chamber independently in Unity before cross-chamber alignment.
+#
+# **Note:** These are low-iteration (3K) preview models for visualization.
+
+# %%
+PER_CHAMBER_3DGS_DIR = WORKSPACE / 'per_chamber_3dgs'
+
+if state.get('per_chamber_3dgs_done'):
+    print("Per-chamber 3DGS already done.")
+else:
+    if HAS_GPU:
+        from scripts.train_3dgs_enhanced import train
+        import argparse
+
+        per_chamber_models = {}
+        for cid, model in sorted(chamber_models.items()):
+            if len(model['images']) < 5:
+                print(f"Chamber {cid}: too few images ({len(model['images'])}), skipping")
+                continue
+
+            chamber_out = PER_CHAMBER_3DGS_DIR / f'chamber_{cid}'
+            chamber_input = setup_3dgs_input(
+                model, IMAGE_DIR,
+                PER_CHAMBER_3DGS_DIR / f'input_{cid}'
+            )
+
+            print(f"\nTraining Chamber {cid} ({len(model['images'])} views)...")
+            args = argparse.Namespace(
+                input_dir=str(chamber_input),
+                output_dir=str(chamber_out),
+                iterations=3000,
+                max_gaussians=50000,
+                log_interval=500,
+            )
+            train(args)
+
+            ply_path = chamber_out / 'arena_3dgs.ply'
+            if ply_path.exists():
+                ply_path.rename(chamber_out / f'chamber_{cid}_3dgs.ply')
+                per_chamber_models[cid] = chamber_out / f'chamber_{cid}_3dgs.ply'
+
+        state['per_chamber_3dgs_done'] = True
+        state['per_chamber_models'] = {
+            str(k): str(v) for k, v in per_chamber_models.items()
+        }
+        completed.append('per_chamber_3dgs')
+        state['completed_steps'] = list(set(completed))
+        save_checkpoint(CHECKPOINT, state)
+    else:
+        print("No GPU available. Per-chamber 3DGS will be skipped.")
+        print("You can still run alignment and unified training on Colab later.")
+
+# %% [markdown]
 # ## Cell 5: Cross-Chamber Alignment
 # Uses transition images registered in both adjacent chamber models to
 # compute rigid transforms directly from camera poses.
@@ -684,15 +739,24 @@ else:
         print(f"  1. Download unified model: {WORKSPACE}/unified_model_for_colab.zip")
 
 # %% [markdown]
-# ## Cell 8B: Per-Chamber 3DGS Training (Optional)
-# Trains individual 3DGS models for each chamber.
-# Useful for inspection or if you want the experimental stitch-then-fine-tune approach.
+# ## Cell 8B: Load Per-Chamber 3DGS Models
+# Loads per-chamber 3DGS models (trained earlier in Cell 4b).
+# If you skipped Cell 4b (no GPU), this cell can still train them now.
 
 # %%
 PER_CHAMBER_3DGS_DIR = WORKSPACE / 'per_chamber_3dgs'
 
 if state.get('per_chamber_3dgs_done'):
-    print("Per-chamber 3DGS already done.")
+    print("Per-chamber 3DGS models loaded from Cell 4b:")
+    per_chamber_models = {}
+    for cid_str, ply_path_str in state.get('per_chamber_models', {}).items():
+        cid = int(cid_str)
+        p = Path(ply_path_str)
+        if p.exists():
+            per_chamber_models[cid] = p
+            print(f"  Chamber {cid}: {p.name} ({p.stat().st_size / 1024:.0f} KB)")
+        else:
+            print(f"  Chamber {cid}: PLY not found at {p}")
 else:
     if HAS_GPU:
         from scripts.train_3dgs_enhanced import train
@@ -729,6 +793,8 @@ else:
         state['per_chamber_models'] = {
             str(k): str(v) for k, v in per_chamber_models.items()
         }
+        completed.append('per_chamber_3dgs')
+        state['completed_steps'] = list(set(completed))
         save_checkpoint(CHECKPOINT, state)
     else:
         print("No GPU available. Skip per-chamber training or use Colab.")
