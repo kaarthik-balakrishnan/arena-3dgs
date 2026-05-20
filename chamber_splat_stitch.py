@@ -78,19 +78,24 @@ RAW_URL = "https://raw.githubusercontent.com/kaarthik-balakrishnan/arena-3dgs/ma
 # ## Cell 1b: Load the chamber_splat module
 
 # %%
-# Download the module from GitHub if missing (works on Colab or locally)
-if not (SCRIPTS / 'chamber_splat.py').exists():
-    print("Downloading chamber_splat.py from GitHub...")
+# Download the module from GitHub (always on Colab to get latest version)
+module_path = SCRIPTS / 'chamber_splat.py'
+if ON_COLAB or not module_path.exists():
+    if module_path.exists():
+        print("Refreshing chamber_splat.py from GitHub...")
+    else:
+        print("Downloading chamber_splat.py from GitHub...")
+    module_path.unlink(missing_ok=True)
     SCRIPTS.mkdir(exist_ok=True)
     url = ("https://raw.githubusercontent.com/"
            "kaarthik-balakrishnan/arena-3dgs/main/scripts/chamber_splat.py")
     try:
-        urllib.request.urlretrieve(url, SCRIPTS / 'chamber_splat.py')
+        urllib.request.urlretrieve(url, module_path)
         print("  Done.")
     except Exception as e:
         print(f"  Download failed: {e}")
 
-if not (SCRIPTS / 'chamber_splat.py').exists():
+if not module_path.exists():
     print("ERROR: scripts/chamber_splat.py not found!")
     print("Open the notebook from GitHub to auto-download:")
     print("  https://github.com/kaarthik-balakrishnan/arena-3dgs")
