@@ -190,59 +190,65 @@ IMAGE_DIR = BASE / 'splat-files-processed'
 
 # On Colab, download images from GitHub if not present
 if len(list(IMAGE_DIR.glob('*.jpg'))) < 50:
-    print("Downloading 91 arena images from GitHub...")
+    print("Downloading arena images from GitHub...")
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    # Generate all Chamber filenames from the naming convention
-    chamber_ranges = {
-        1: (1, 26), 2: (1, 10), 3: (1, 5), 4: (1, 9),
-        5: (1, 7), 6: (1, 10), 7: (1, 8), 8: (1, 9), 9: (1, 7),
-    }
-    filenames = set()
-    for c, (lo, hi) in chamber_ranges.items():
-        for n in range(lo, hi + 1):
-            filenames.add(f"Chamber{c}_{n:02d}.jpg")
-    # Add known transition/topview/outside variants built from actual names
-    filenames.update([
-        "Chamber1_03_Chamber2.jpg", "Chamber1_07_Chamber2.jpg",
-        "Chamber1_09_Chamber2.jpg", "Chamber1_11_Chamber2.jpg",
-        "Chamber1_12_Chamber2.jpg", "Chamber1_17_topview.jpg",
-        "Chamber1_18_Chamber2_topview.jpg", "Chamber1_19_Chamber2.jpg",
-        "Chamber1_20_outside.jpg", "Chamber1_21_outside.jpg",
-        "Chamber1_22_Chamber2.jpg", "Chamber1_23_Chamber2.jpg",
-        "Chamber2_01_Chamber1.jpg", "Chamber2_02_Chamber1_topview.jpg",
-        "Chamber2_03_Chamber1_topview.jpg", "Chamber2_04_Chamber3.jpg",
-        "Chamber2_05_Chamber3.jpg", "Chamber2_06_Chamber1.jpg",
-        "Chamber2_07_Chamber1_topview.jpg", "Chamber2_08_Chamber3_topview.jpg",
-        "Chamber2_09_Chamber3_topview.jpg", "Chamber2_10_outside.jpg",
-        "Chamber3_01_Chamber4.jpg", "Chamber3_02_Chamber4_topview.jpg",
-        "Chamber3_03_Chamber2.jpg", "Chamber3_04_Chamber4_topview.jpg",
-        "Chamber3_05_outside.jpg", "Chamber4_01_Chamber3_topview.jpg",
-        "Chamber4_02_Chamber3.jpg", "Chamber4_03_topview.jpg",
-        "Chamber4_04_Chamber5_topview.jpg", "Chamber4_05_Chamber5_topview.jpg",
-        "Chamber4_06_Chamber5.jpg", "Chamber4_07_Chamber3.jpg",
-        "Chamber4_08_Chamber5_topview.jpg", "Chamber4_09_outside.jpg",
-        "Chamber5_01_Chamber4_topview.jpg", "Chamber5_02_Chamber6_topview.jpg",
-        "Chamber5_03_Chamber6_topview.jpg", "Chamber5_04_Chamber4.jpg",
-        "Chamber5_05_Chamber6.jpg", "Chamber5_06_Chamber6_topview.jpg",
-        "Chamber5_07_outside.jpg", "Chamber6_01_Chamber5_topview.jpg",
-        "Chamber6_02_Chamber5_topview.jpg", "Chamber6_03_Chamber5_topview.jpg",
-        "Chamber6_04_Chamber7_topview.jpg", "Chamber6_05_Chamber7_topview.jpg",
-        "Chamber6_06_Chamber7.jpg", "Chamber6_07_Chamber7.jpg",
-        "Chamber6_08_Chamber5.jpg", "Chamber6_09_Chamber7_topview.jpg",
-        "Chamber6_10_outside.jpg", "Chamber7_01_Chamber6_topview.jpg",
-        "Chamber7_02_Chamber6_topview.jpg", "Chamber7_03_Chamber8.jpg",
-        "Chamber7_04_Chamber8_topview.jpg", "Chamber7_05_Chamber8.jpg",
-        "Chamber7_06_Chamber6.jpg", "Chamber7_07_Chamber6_topview.jpg",
-        "Chamber7_08_outside.jpg", "Chamber8_01_Chamber7_topview.jpg",
-        "Chamber8_02_topview.jpg", "Chamber8_03_Chamber9_topview.jpg",
-        "Chamber8_04_Chamber7.jpg", "Chamber8_05_Chamber7.jpg",
-        "Chamber8_06_Chamber7.jpg", "Chamber8_07_Chamber9_topview.jpg",
-        "Chamber8_08_Chamber9.jpg", "Chamber8_09_outside.jpg",
-        "Chamber9_01_Chamber8_topview.jpg", "Chamber9_02_Chamber8_topview.jpg",
-        "Chamber9_03.jpg", "Chamber9_04.jpg", "Chamber9_05.jpg",
-        "Chamber9_06.jpg", "Chamber9_07.jpg",
-    ])
-    for fname in sorted(filenames):
+    # Fetch actual file list from GitHub API
+    api_url = ("https://api.github.com/repos/"
+               "kaarthik-balakrishnan/arena-3dgs/contents/splat-files-processed")
+    req = urllib.request.Request(api_url, headers={"User-Agent": "arena-3dgs"})
+    try:
+        with urllib.request.urlopen(req) as resp:
+            entries = json.loads(resp.read().decode())
+        filenames = [e['name'] for e in entries if e['name'].endswith('.jpg')]
+    except Exception as e:
+        print(f"  GitHub API error: {e}")
+        print("  Falling back to known file list...")
+        filenames = [
+            "Chamber1_01.jpg", "Chamber1_02.jpg", "Chamber1_03_Chamber2.jpg",
+            "Chamber1_04.jpg", "Chamber1_05.jpg", "Chamber1_06.jpg",
+            "Chamber1_07_Chamber2.jpg", "Chamber1_08.jpg",
+            "Chamber1_09_Chamber2.jpg", "Chamber1_10.jpg",
+            "Chamber1_11_Chamber2.jpg", "Chamber1_12_Chamber2.jpg",
+            "Chamber1_13.jpg", "Chamber1_14.jpg", "Chamber1_15.jpg",
+            "Chamber1_16.jpg", "Chamber1_17_topview.jpg",
+            "Chamber1_18_Chamber2_topview.jpg", "Chamber1_19_Chamber2.jpg",
+            "Chamber1_20_outside.jpg", "Chamber1_21_outside.jpg",
+            "Chamber1_22_Chamber2.jpg", "Chamber1_23_Chamber2.jpg",
+            "Chamber1_24.jpg", "Chamber1_25.jpg", "Chamber1_26.jpg",
+            "Chamber2_01_Chamber1.jpg", "Chamber2_02_Chamber1_topview.jpg",
+            "Chamber2_03_Chamber1_topview.jpg", "Chamber2_04_Chamber3.jpg",
+            "Chamber2_05_Chamber3.jpg", "Chamber2_06_Chamber1.jpg",
+            "Chamber2_07_Chamber1_topview.jpg", "Chamber2_08_Chamber3_topview.jpg",
+            "Chamber2_09_Chamber3_topview.jpg", "Chamber2_10_outside.jpg",
+            "Chamber3_01_Chamber4.jpg", "Chamber3_02_Chamber4_topview.jpg",
+            "Chamber3_03_Chamber2.jpg", "Chamber3_04_Chamber4_topview.jpg",
+            "Chamber3_05_outside.jpg", "Chamber4_01_Chamber3_topview.jpg",
+            "Chamber4_02_Chamber3.jpg", "Chamber4_03_topview.jpg",
+            "Chamber4_04_Chamber5_topview.jpg", "Chamber4_05_Chamber5_topview.jpg",
+            "Chamber4_06_Chamber5.jpg", "Chamber4_07_Chamber3.jpg",
+            "Chamber4_08_Chamber5_topview.jpg", "Chamber4_09_outside.jpg",
+            "Chamber5_01_Chamber4_topview.jpg", "Chamber5_02_Chamber6_topview.jpg",
+            "Chamber5_03_Chamber6_topview.jpg", "Chamber5_04_Chamber4.jpg",
+            "Chamber5_05_Chamber6.jpg", "Chamber5_06_Chamber6_topview.jpg",
+            "Chamber5_07_outside.jpg", "Chamber6_01_Chamber5_topview.jpg",
+            "Chamber6_02_Chamber5_topview.jpg", "Chamber6_03_Chamber5_topview.jpg",
+            "Chamber6_04_Chamber7_topview.jpg", "Chamber6_05_Chamber7_topview.jpg",
+            "Chamber6_06_Chamber7.jpg", "Chamber6_07_Chamber7.jpg",
+            "Chamber6_08_Chamber5.jpg", "Chamber6_09_Chamber7_topview.jpg",
+            "Chamber6_10_outside.jpg", "Chamber7_01_Chamber6_topview.jpg",
+            "Chamber7_02_Chamber6_topview.jpg", "Chamber7_03_Chamber8.jpg",
+            "Chamber7_04_Chamber8_topview.jpg", "Chamber7_05_Chamber8.jpg",
+            "Chamber7_06_Chamber6.jpg", "Chamber7_07_Chamber6_topview.jpg",
+            "Chamber7_08_outside.jpg", "Chamber8_01_Chamber7_topview.jpg",
+            "Chamber8_02_topview.jpg", "Chamber8_03_Chamber9_topview.jpg",
+            "Chamber8_04_Chamber7.jpg", "Chamber8_05_Chamber7.jpg",
+            "Chamber8_06_Chamber7.jpg", "Chamber8_07_Chamber9_topview.jpg",
+            "Chamber8_08_Chamber9.jpg", "Chamber8_09_outside.jpg",
+            "Chamber9_01_Chamber8_topview.jpg", "Chamber9_02_Chamber8_topview.jpg",
+            "Chamber9_03.jpg", "Chamber9_04.jpg", "Chamber9_05.jpg",
+            "Chamber9_06.jpg", "Chamber9_07.jpg",
+        ]
+    for fname in filenames:
         if (IMAGE_DIR / fname).exists():
             continue
         try:
