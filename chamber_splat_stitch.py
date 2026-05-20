@@ -79,31 +79,35 @@ RAW_URL = "https://raw.githubusercontent.com/kaarthik-balakrishnan/arena-3dgs/ma
 
 # %%
 # Download the module from GitHub (always on Colab to get latest version)
-module_path = SCRIPTS / 'chamber_splat.py'
-if ON_COLAB or not module_path.exists():
-    if module_path.exists():
-        print("Refreshing chamber_splat.py from GitHub...")
-    else:
-        print("Downloading chamber_splat.py from GitHub...")
-    module_path.unlink(missing_ok=True)
-    # Also remove any cached bytecode
-    for cache in SCRIPTS.glob('__pycache__/chamber_splat*'):
-        cache.unlink(missing_ok=True)
-    SCRIPTS.mkdir(exist_ok=True)
-    url = ("https://raw.githubusercontent.com/"
-           "kaarthik-balakrishnan/arena-3dgs/main/scripts/chamber_splat.py")
-    try:
-        urllib.request.urlretrieve(url, module_path)
-        print("  Done.")
-    except Exception as e:
-        print(f"  Download failed: {e}")
+SCRIPTS.mkdir(exist_ok=True)
+REPO_BASE = ("https://raw.githubusercontent.com/"
+             "kaarthik-balakrishnan/arena-3dgs/main/scripts")
+REQUIRED_SCRIPTS = ['chamber_splat.py', 'train_3dgs_enhanced.py']
 
-if not module_path.exists():
-    print("ERROR: scripts/chamber_splat.py not found!")
-    print("Open the notebook from GitHub to auto-download:")
-    print("  https://github.com/kaarthik-balakrishnan/arena-3dgs")
-    print("Or manually place scripts/chamber_splat.py from the repo.")
-    raise SystemExit(1)
+for script_name in REQUIRED_SCRIPTS:
+    module_path = SCRIPTS / script_name
+    if ON_COLAB or not module_path.exists():
+        if module_path.exists():
+            print(f"Refreshing {script_name} from GitHub...")
+        else:
+            print(f"Downloading {script_name} from GitHub...")
+        module_path.unlink(missing_ok=True)
+        # Also remove any cached bytecode
+        for cache in SCRIPTS.glob(f'__pycache__/{script_name.replace(".py", "")}*'):
+            cache.unlink(missing_ok=True)
+        url = f"{REPO_BASE}/{script_name}"
+        try:
+            urllib.request.urlretrieve(url, module_path)
+            print("  Done.")
+        except Exception as e:
+            print(f"  Download failed: {e}")
+
+    if not module_path.exists():
+        print(f"ERROR: scripts/{script_name} not found!")
+        print("Open the notebook from GitHub to auto-download:")
+        print("  https://github.com/kaarthik-balakrishnan/arena-3dgs")
+        print(f"Or manually place scripts/{script_name} from the repo.")
+        raise SystemExit(1)
 
 # Force re-import: purge any cached version from previous cell runs
 import importlib
