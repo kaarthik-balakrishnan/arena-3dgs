@@ -321,7 +321,7 @@ def train(args):
             Ks=Ks,
             width=img_w,
             height=img_h,
-            backgrounds=torch.zeros(n_views, 3, device=device),
+            backgrounds=None,  # defaults to black; avoids gsplat 1.5.3+ packed-mode assertion bug
         )
 
         loss = F.mse_loss(renders, imgs_gt)
