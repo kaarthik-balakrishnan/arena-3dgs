@@ -112,42 +112,45 @@ def densification(means, scales, opacities, grad_accum, count_accum,
     grad_avg = grad_accum / count_accum.clamp(min=1)
     grad_norm = grad_avg.norm(dim=-1)
 
-    # Clone: high-gradient, small gaussians (under-reconstruction)
     clone_mask = (grad_norm >= densify_grad_threshold) & (scales.mean(dim=-1) <= densify_size_threshold)
-    # Split: high-gradient, large gaussians (over-reconstruction)
     split_mask = (grad_norm >= densify_grad_threshold) & (scales.mean(dim=-1) > densify_size_threshold)
 
     n_clone = clone_mask.sum().item()
     n_split = split_mask.sum().item()
 
+    # Build gaussian lists from originals; split replaces its originals
+    keep_mask = torch.ones(n, dtype=torch.bool, device=means.device)
+    parts_m = [means]
+    parts_s = [scales]
+    parts_o = [opacities]
+
     if n_clone > 0:
-        clone_means = means[clone_mask]
-        clone_scales = scales[clone_mask]
-        clone_opacities = opacities[clone_mask]
-        # Add small noise to cloned means
-        noise = torch.randn_like(clone_means) * 0.001 * clone_scales.mean(dim=-1, keepdim=True)
-        clone_means = clone_means + noise
-        means = torch.cat([means, clone_means])
-        scales = torch.cat([scales, clone_scales * 0.5])  # halve scale for clone
-        opacities = torch.cat([opacities, clone_opacities])
+        clone_m = means[clone_mask]
+        clone_s = scales[clone_mask]
+        clone_o = opacities[clone_mask]
+        noise = torch.randn_like(clone_m) * 0.001 * clone_s.mean(dim=-1, keepdim=True)
+        parts_m.append(clone_m + noise)
+        parts_s.append(clone_s * 0.5)
+        parts_o.append(clone_o)
 
     if n_split > 0:
-        split_means = means[split_mask]
-        split_scales = scales[split_mask]
-        split_opacities = opacities[split_mask]
-        n_dup = 2
-        split_means = split_means.repeat(n_dup, 1)
-        noise = torch.randn_like(split_means) * 0.001
-        split_means = split_means + noise
-        split_scales = (split_scales / 1.6).repeat(n_dup, 1)
-        split_opacities = split_opacities.repeat(n_dup)
+        keep_mask[split_mask] = False
+        split_m = means[split_mask].repeat(2, 1)
+        split_s = (scales[split_mask] / 1.6).repeat(2, 1)
+        split_o = opacities[split_mask].repeat(2)
+        noise = torch.randn_like(split_m) * 0.001
+        parts_m.append(split_m + noise)
+        parts_s.append(split_s)
+        parts_o.append(split_o)
 
-        mask = torch.ones(n + n_clone, dtype=torch.bool, device=means.device)
-        mask[len(mask)-n_split:] = False  # remove original large gaussians
-        
-        means = torch.cat([means[mask], split_means])
-        scales = torch.cat([scales[mask], split_scales])
-        opacities = torch.cat([opacities[mask], split_opacities])
+    # Apply keep_mask to the original chunk (index 0)
+    parts_m[0] = means[keep_mask]
+    parts_s[0] = scales[keep_mask]
+    parts_o[0] = opacities[keep_mask]
+
+    means = torch.cat(parts_m)
+    scales = torch.cat(parts_s)
+    opacities = torch.cat(parts_o)
 
     # Prune: remove low-opacity gaussians
     prune_mask = torch.sigmoid(opacities) < prune_opacity_threshold
