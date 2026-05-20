@@ -17,7 +17,7 @@
 # Uses the naming convention `Chamber{X}_{NN}_[Chamber{Y}]_[view].jpg` to:
 # 1. Run per-chamber COLMAP independently
 # 2. Find 3D-3D correspondences between adjacent chambers via **transition images**
-# 3. Compute rigid transforms (RANSAC on SIFT descriptor matches from binary COLMAP data)
+# 3. Compute rigid transforms from camera poses of shared transition images
 # 4. Merge into a unified sparse model
 # 5. Train a single 3DGS on the unified data (or per-chamber + stitch)
 #
@@ -359,8 +359,8 @@ else:
 
     # Duplicate transition images to their target chamber so each transition
     # image is processed in BOTH adjacent chambers' COLMAP runs. This ensures
-    # both models have 3D observations of the same physical points with the
-    # same SIFT descriptors, enabling robust cross-chamber matching.
+    # the image registers in both models, giving us a shared camera pose
+    # for direct cross-chamber alignment.
     n_dup = 0
     for cid in list(by_chamber.keys()):
         for img in by_chamber[cid][:]:
@@ -412,16 +412,14 @@ print(f"\n✅ Cell 4 complete: {len(chamber_models)} chambers processed")
 
 # %% [markdown]
 # ## Cell 5: Cross-Chamber Alignment
-# Uses transition images (ChamberX→ChamberY) and binary COLMAP descriptors
-# to find 3D-3D correspondences, then RANSAC for rigid transforms.
+# Uses transition images registered in both adjacent chamber models to
+# compute rigid transforms directly from camera poses.
 #
 # **Algorithm:**
-# 1. For adjacent chambers X and Y, identify bridge points (3D points observed
-#    by transition images showing the other chamber)
-# 2. Extract 128-byte SIFT descriptors from COLMAP binary models
-# 3. Match descriptors between chambers using brute-force + Lowe's ratio test
-# 4. RANSAC on matched 3D positions → rigid transform (R, t)
-# 5. Chain transforms: all chambers → Chamber1's coordinate frame
+# 1. Find transition images that registered in both adjacent chamber models
+# 2. For each shared image, compute relative transform: R = R_X @ R_Y.T, t = t_X - R @ t_Y
+# 3. With multiple shared images, robustly average rotations (SVD of median) and translations (median)
+# 4. Chain transforms: all chambers → Chamber1's coordinate frame
 
 # %%
 CHAMBER_MODELS_DIR = CHAMBER_COLMAP_DIR
@@ -877,11 +875,11 @@ else:
 #              │            │            │
 #              └──────┬─────┴──────┬─────┘
 #                     │           │
-#               ┌─────▼─────┐ ┌───▼────┐
-#               │ Descriptor│ │RANSAC  │
-#               │ Matching  │ │Rigid   │
-#               │ (SIFT)    │ │Transform│
-#               └─────┬─────┘ └───┬────┘
+#               ┌─────▼─────┐ ┌───▼─────────┐
+#               │ Shared    │ │ Camera-Pose │
+#               │ Transition│ │ Alignment   │
+#               │ Images    │ │ R = R_X@R_Y.T│
+#               └─────┬─────┘ └───┬─────────┘
 #                     │           │
 #               ┌─────▼───────────▼────┐
 #               │  Unified Sparse      │
@@ -899,7 +897,7 @@ else:
 #
 # **Key novel contribution:** Using the naming convention as a structural prior
 # to decompose a large, lighting-inconsistent scene into smaller consistent
-# sub-models, then recomposing via COLMAP descriptor matching.
+# sub-models, then recomposing via camera-pose-based cross-chamber alignment.
 #
 # This avoids the common failure mode where COLMAP on the full 91-image set
 # only registers ~37% of images (due to the ×6 EV brightness range across
