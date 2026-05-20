@@ -315,20 +315,33 @@ state.setdefault('chamber_models', {})
 completed = state.get('completed_steps', [])
 
 if 'per_chamber_colmap' in completed:
-    print("Per-chamber COLMAP already done. Loading results...")
-    chamber_models = {}
-    for cid_str, model_info in state['chamber_models'].items():
-        cid = int(cid_str)
-        model_dir = Path(model_info['path'])
-        db_path = model_dir.parent / 'database.db'
-        if model_dir.exists():
-            chamber_models[cid] = load_colmap_model(
-                model_dir / 'txt' if (model_dir / 'txt').exists() else model_dir,
-                db_path=db_path if db_path.exists() else None,
-            )
-            print(f"  Chamber {cid}: {model_info['n_reg']}/{model_info['n_total']} registered")
-        else:
-            print(f"  Chamber {cid}: model dir not found, will re-run")
+    # Verify all chambers have models — previous run may have failed
+    expected = set(str(k) for k in by_chamber.keys())
+    present = set(state.get('chamber_models', {}).keys())
+    missing = expected - present
+    if missing:
+        print(f"Per-chamber COLMAP was marked done but chambers "
+              f"{sorted(missing, key=int)} are missing. Re-running...")
+        completed.remove('per_chamber_colmap')
+        state['chamber_models'] = {k: v for k, v in
+                                   state.get('chamber_models', {}).items()
+                                   if k not in missing}
+        chamber_models = {}
+    else:
+        print("Per-chamber COLMAP already done. Loading results...")
+        chamber_models = {}
+        for cid_str, model_info in state['chamber_models'].items():
+            cid = int(cid_str)
+            model_dir = Path(model_info['path'])
+            db_path = model_dir.parent / 'database.db'
+            if model_dir.exists():
+                chamber_models[cid] = load_colmap_model(
+                    model_dir / 'txt' if (model_dir / 'txt').exists() else model_dir,
+                    db_path=db_path if db_path.exists() else None,
+                )
+                print(f"  Chamber {cid}: {model_info['n_reg']}/{model_info['n_total']} registered")
+            else:
+                print(f"  Chamber {cid}: model dir not found, will re-run")
 else:
     chamber_models = {}
     for cid in sorted(by_chamber.keys()):
