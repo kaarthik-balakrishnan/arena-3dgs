@@ -111,8 +111,9 @@ for script_name in REQUIRED_SCRIPTS:
 
 # Force re-import: purge any cached version from previous cell runs
 import importlib
-if 'scripts.chamber_splat' in sys.modules:
-    del sys.modules['scripts.chamber_splat']
+for _mod in ['scripts.chamber_splat', 'scripts.train_3dgs_enhanced']:
+    if _mod in sys.modules:
+        del sys.modules[_mod]
 
 from scripts.chamber_splat import (
     parse_image_name, categorize_images, print_dataset_summary,
