@@ -70,23 +70,28 @@ RAW_URL = "https://raw.githubusercontent.com/kaarthik-balakrishnan/arena-3dgs/ma
 # ## Cell 1b: Load the chamber_splat module
 
 # %%
-# On Colab: download the module from GitHub
-if ON_COLAB and not (SCRIPTS / 'chamber_splat.py').exists():
+# Download the module from GitHub if missing (works on Colab or locally)
+if not (SCRIPTS / 'chamber_splat.py').exists():
     print("Downloading chamber_splat.py from GitHub...")
     SCRIPTS.mkdir(exist_ok=True)
     url = ("https://raw.githubusercontent.com/"
            "kaarthik-balakrishnan/arena-3dgs/main/scripts/chamber_splat.py")
-    urllib.request.urlretrieve(url, SCRIPTS / 'chamber_splat.py')
-    print("  Done.")
+    try:
+        urllib.request.urlretrieve(url, SCRIPTS / 'chamber_splat.py')
+        print("  Done.")
+    except Exception as e:
+        print(f"  Download failed: {e}")
 
 if not (SCRIPTS / 'chamber_splat.py').exists():
     print("ERROR: scripts/chamber_splat.py not found!")
-    print("Upload chamber_splat.py to the scripts/ directory.")
+    print("Open the notebook from GitHub to auto-download:")
+    print("  https://github.com/kaarthik-balakrishnan/arena-3dgs")
+    print("Or manually place scripts/chamber_splat.py from the repo.")
     raise SystemExit(1)
 
 from scripts.chamber_splat import (
     parse_image_name, categorize_images, print_dataset_summary,
-    fix_CHamber1_08, filter_bad_images,
+    filter_bad_images,
     run_chamber_colmap, load_colmap_model,
     get_bridge_point_ids, get_bridge_descriptors, get_bridge_positions,
     match_bridge_points, compute_rigid_transform_ransac,
@@ -175,38 +180,71 @@ else:
 IMAGE_DIR = BASE / 'splat-files-processed'
 
 # On Colab, download images from GitHub if not present
-if ON_COLAB and len(list(IMAGE_DIR.glob('*.jpg'))) < 90:
+if ON_COLAB and len(list(IMAGE_DIR.glob('*.jpg'))) < 50:
     print("Downloading 91 arena images from GitHub...")
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    import urllib.request
-    # Get file list from the repo
-    url = f"{RAW_URL}/splat-files-processed"
-    # Download known filenames (all ChamberX_*.jpg)
-    import subprocess
-    result = subprocess.run(
-        ["git", "ls-tree", "--name-only", "main", "splat-files-processed/"],
-        capture_output=True, text=True, cwd=BASE
-    )
-    if result.returncode != 0:
-        # Fallback: generate names from our naming convention
-        filenames = [f"{c}_{n:02d}.jpg" for c in range(1,10) for n in range(1,27)]
-    else:
-        filenames = [f.split('/')[-1] for f in result.stdout.strip().split('\n')
-                     if f.endswith('.jpg')]
-    
-    for fname in filenames:
-        if not (IMAGE_DIR / fname).exists():
-            try:
-                urllib.request.urlretrieve(
-                    f"{RAW_URL}/splat-files-processed/{fname}",
-                    IMAGE_DIR / fname
-                )
-            except Exception as e:
-                print(f"  Failed to download {fname}: {e}")
-    print(f"  Downloaded {len(list(IMAGE_DIR.glob('*.jpg')))} images")
-
-# Fix naming anomaly
-fix_CHamber1_08(IMAGE_DIR)
+    # Generate all Chamber filenames from the naming convention
+    chamber_ranges = {
+        1: (1, 26), 2: (1, 10), 3: (1, 5), 4: (1, 9),
+        5: (1, 7), 6: (1, 10), 7: (1, 8), 8: (1, 9), 9: (1, 7),
+    }
+    filenames = set()
+    for c, (lo, hi) in chamber_ranges.items():
+        for n in range(lo, hi + 1):
+            filenames.add(f"Chamber{c}_{n:02d}.jpg")
+    # Add known transition/topview/outside variants built from actual names
+    filenames.update([
+        "Chamber1_03_Chamber2.jpg", "Chamber1_07_Chamber2.jpg",
+        "Chamber1_09_Chamber2.jpg", "Chamber1_11_Chamber2.jpg",
+        "Chamber1_12_Chamber2.jpg", "Chamber1_17_topview.jpg",
+        "Chamber1_18_Chamber2_topview.jpg", "Chamber1_19_Chamber2.jpg",
+        "Chamber1_20_outside.jpg", "Chamber1_21_outside.jpg",
+        "Chamber1_22_Chamber2.jpg", "Chamber1_23_Chamber2.jpg",
+        "Chamber2_01_Chamber1.jpg", "Chamber2_02_Chamber1_topview.jpg",
+        "Chamber2_03_Chamber1_topview.jpg", "Chamber2_04_Chamber3.jpg",
+        "Chamber2_05_Chamber3.jpg", "Chamber2_06_Chamber1.jpg",
+        "Chamber2_07_Chamber1_topview.jpg", "Chamber2_08_Chamber3_topview.jpg",
+        "Chamber2_09_Chamber3_topview.jpg", "Chamber2_10_outside.jpg",
+        "Chamber3_01_Chamber4.jpg", "Chamber3_02_Chamber4_topview.jpg",
+        "Chamber3_03_Chamber2.jpg", "Chamber3_04_Chamber4_topview.jpg",
+        "Chamber3_05_outside.jpg", "Chamber4_01_Chamber3_topview.jpg",
+        "Chamber4_02_Chamber3.jpg", "Chamber4_03_topview.jpg",
+        "Chamber4_04_Chamber5_topview.jpg", "Chamber4_05_Chamber5_topview.jpg",
+        "Chamber4_06_Chamber5.jpg", "Chamber4_07_Chamber3.jpg",
+        "Chamber4_08_Chamber5_topview.jpg", "Chamber4_09_outside.jpg",
+        "Chamber5_01_Chamber4_topview.jpg", "Chamber5_02_Chamber6_topview.jpg",
+        "Chamber5_03_Chamber6_topview.jpg", "Chamber5_04_Chamber4.jpg",
+        "Chamber5_05_Chamber6.jpg", "Chamber5_06_Chamber6_topview.jpg",
+        "Chamber5_07_outside.jpg", "Chamber6_01_Chamber5_topview.jpg",
+        "Chamber6_02_Chamber5_topview.jpg", "Chamber6_03_Chamber5_topview.jpg",
+        "Chamber6_04_Chamber7_topview.jpg", "Chamber6_05_Chamber7_topview.jpg",
+        "Chamber6_06_Chamber7.jpg", "Chamber6_07_Chamber7.jpg",
+        "Chamber6_08_Chamber5.jpg", "Chamber6_09_Chamber7_topview.jpg",
+        "Chamber6_10_outside.jpg", "Chamber7_01_Chamber6_topview.jpg",
+        "Chamber7_02_Chamber6_topview.jpg", "Chamber7_03_Chamber8.jpg",
+        "Chamber7_04_Chamber8_topview.jpg", "Chamber7_05_Chamber8.jpg",
+        "Chamber7_06_Chamber6.jpg", "Chamber7_07_Chamber6_topview.jpg",
+        "Chamber7_08_outside.jpg", "Chamber8_01_Chamber7_topview.jpg",
+        "Chamber8_02_topview.jpg", "Chamber8_03_Chamber9_topview.jpg",
+        "Chamber8_04_Chamber7.jpg", "Chamber8_05_Chamber7.jpg",
+        "Chamber8_06_Chamber7.jpg", "Chamber8_07_Chamber9_topview.jpg",
+        "Chamber8_08_Chamber9.jpg", "Chamber8_09_outside.jpg",
+        "Chamber9_01_Chamber8_topview.jpg", "Chamber9_02_Chamber8_topview.jpg",
+        "Chamber9_03.jpg", "Chamber9_04.jpg", "Chamber9_05.jpg",
+        "Chamber9_06.jpg", "Chamber9_07.jpg",
+    ])
+    for fname in sorted(filenames):
+        if (IMAGE_DIR / fname).exists():
+            continue
+        try:
+            urllib.request.urlretrieve(
+                f"{RAW_URL}/splat-files-processed/{fname}",
+                IMAGE_DIR / fname
+            )
+        except Exception as e:
+            print(f"  Failed to download {fname}: {e}")
+    n_imgs = len(list(IMAGE_DIR.glob('*.jpg')))
+    print(f"  Downloaded {n_imgs}/91 images")
 
 # Pre-compute quality scores (lightweight)
 print("Computing image quality metrics...")
