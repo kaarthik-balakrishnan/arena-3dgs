@@ -435,22 +435,17 @@ def run_colmap_feature_extraction(database_path, image_path, options=None):
         "--SiftExtraction.max_num_features", str(opts.get('max_features', 32768)),
         "--SiftExtraction.first_octave", "-1",
         "--SiftExtraction.peak_threshold", str(opts.get('peak_threshold', 0.02)),
-        "--SiftExtraction.use_gpu", "0",
     ]
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = ""
-    print(f"  Running: colmap feature_extractor (CPU mode)")
-    ret = subprocess.run(cmd, env=env)
+    print(f"  Running: colmap feature_extractor ...")
+    ret = subprocess.run(cmd)
     if ret.returncode != 0:
         raise RuntimeError(f"Feature extraction failed (code {ret.returncode})")
 
 
 def run_colmap_exhaustive_matching(database_path):
     cmd = ["colmap", "exhaustive_matcher", "--database_path", str(database_path)]
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = ""
     print(f"  Running: colmap exhaustive_matcher ...")
-    ret = subprocess.run(cmd, env=env)
+    ret = subprocess.run(cmd)
     if ret.returncode != 0:
         raise RuntimeError(f"Exhaustive matching failed (code {ret.returncode})")
 
@@ -472,10 +467,8 @@ def run_colmap_mapper(database_path, image_path, output_path, options=None):
         "--Mapper.max_num_models", "50",
         "--Mapper.min_model_size", "3",
     ]
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = ""
-    print(f"  Running: colmap mapper (CPU mode) ...")
-    ret = subprocess.run(cmd, env=env)
+    print(f"  Running: colmap mapper ...")
+    ret = subprocess.run(cmd)
     if ret.returncode != 0:
         print(f"  WARNING: mapper returned code {ret.returncode}")
     return find_best_model(output_path)

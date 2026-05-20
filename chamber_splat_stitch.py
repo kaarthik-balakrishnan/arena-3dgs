@@ -129,9 +129,14 @@ except (FileNotFoundError, subprocess.CalledProcessError):
     pass
 
 if not colmap_available and ON_COLAB:
-    print("Installing COLMAP via apt-get...")
-    subprocess.run(['apt-get', 'update', '-qq'], check=True)
-    subprocess.run(['apt-get', 'install', '-y', '-qq', 'colmap'], check=True)
+    print("Installing COLMAP (CUDA binary for T4 GPU)...")
+    COLMAP_VER = "3.9.1"
+    url = (f"https://github.com/colmap/colmap/releases/download/"
+           f"{COLMAP_VER}/colmap-{COLMAP_VER}-linux-cuda-x86_64.tar.gz")
+    subprocess.run(['wget', '-q', url], check=True)
+    subprocess.run(['tar', '-xzf', f'colmap-{COLMAP_VER}-linux-cuda-x86_64.tar.gz',
+                    '-C', '/usr/local/'], check=True)
+    subprocess.run(['rm', f'colmap-{COLMAP_VER}-linux-cuda-x86_64.tar.gz'])
     # Verify
     result = subprocess.run(['colmap', 'help'], capture_output=True, text=True)
     print(result.stdout[:200])
