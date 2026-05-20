@@ -367,17 +367,15 @@ def train(args):
                 n_new = len(new_means)
                 n_old = len(means)
                 if n_new != n_old:
-                    # Reconstruct parameters
-                    old_n = len(means)
-                    means.data = new_means
-                    scales.data = torch.log(new_scales.clamp(min=1e-7))
-                    opacities.data = new_opacities
-                    
-                    # Extend quats and SH if we added gaussians
-                    if n_new > old_n:
-                        n_added = n_new - old_n
-                        quats.data = torch.cat([quats.data, quats.data[:1].repeat(n_added, 1)])
-                        colors_sh.data = torch.cat([colors_sh.data, torch.zeros(n_added, colors_sh.shape[1], device=device)])
+                    n_added = max(0, n_new - n_old)
+                    n_trimmed = max(0, n_old - n_new)
+                    quats_new = torch.cat([quats.data, quats.data[:1].repeat(n_added, 1)]) if n_added else quats.data[:n_new] if n_trimmed else quats.data
+                    colors_sh_new = torch.cat([colors_sh.data, torch.zeros(n_added, colors_sh.shape[1], device=device)]) if n_added else colors_sh.data[:n_new] if n_trimmed else colors_sh.data
+                    means = torch.nn.Parameter(new_means)
+                    quats = torch.nn.Parameter(quats_new)
+                    scales = torch.nn.Parameter(torch.log(new_scales.clamp(min=1e-7)))
+                    opacities = torch.nn.Parameter(new_opacities)
+                    colors_sh = torch.nn.Parameter(colors_sh_new)
                     
                     params = [means, quats, scales, opacities, colors_sh]
                     optimizer = torch.optim.Adam(params, lr=1e-3 * (0.99 ** (it // 1000)))
