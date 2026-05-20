@@ -172,6 +172,27 @@ def densification(means, scales, opacities, grad_accum, count_accum,
     return means, scales, opacities, grad_accum, count_accum
 
 
+# ── SSIM loss (1D Gaussian window, same as original 3DGS) ──────────
+def _gaussian_window(window_size, sigma, channel, device):
+    coords = torch.arange(window_size, dtype=torch.float32, device=device) - window_size // 2
+    g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+    g = g / g.sum()
+    window = g[:, None] * g[None, :]
+    return window.expand(channel, 1, window_size, window_size)
+
+def ssim(img1, img2, window_size=11, sigma=1.5, size_average=True):
+    channel = img1.shape[1]
+    window = _gaussian_window(window_size, sigma, channel, img1.device)
+    mu1 = F.conv2d(img1, window, padding=window_size // 2, groups=channel)
+    mu2 = F.conv2d(img2, window, padding=window_size // 2, groups=channel)
+    mu1_sq, mu2_sq, mu1_mu2 = mu1.pow(2), mu2.pow(2), mu1 * mu2
+    sigma1_sq = F.conv2d(img1 * img1, window, padding=window_size // 2, groups=channel) - mu1_sq
+    sigma2_sq = F.conv2d(img2 * img2, window, padding=window_size // 2, groups=channel) - mu2_sq
+    sigma12 = F.conv2d(img1 * img2, window, padding=window_size // 2, groups=channel) - mu1_mu2
+    C1, C2 = 0.01 ** 2, 0.03 ** 2
+    ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
+    return ssim_map.mean() if size_average else ssim_map.mean(dim=(1, 2, 3))
+
 # ── Main training ──────────────────────────────────────────────────
 def train(args):
     device = torch.device("cuda" if torch.cuda.is_available() else 
@@ -288,20 +309,34 @@ def train(args):
     quats = torch.zeros(n_points, 4, dtype=torch.float32, device=device)
     quats[:, 0] = 1.0
     opacities = torch.full((n_points,), 0.1, dtype=torch.float32, device=device)
-    scales = torch.full((n_points, 3), 0.001, dtype=torch.float32, device=device)
+    from scipy.spatial import cKDTree
+    tree = cKDTree(points)
+    dist, _ = tree.query(points, k=2)
+    nn_dist = np.maximum(dist[:, 1], 1e-7)
+    scales_init = np.log(np.sqrt(nn_dist))
+    scales = torch.tensor(np.tile(scales_init[:, np.newaxis], (1, 3)), dtype=torch.float32, device=device)
 
     means = torch.nn.Parameter(means)
     quats = torch.nn.Parameter(quats)
     scales = torch.nn.Parameter(torch.log(scales))
     opacities = torch.nn.Parameter(torch.log(opacities / (1 - opacities + 1e-10)))
     n_sh_rest = 45  # total 48 SH coeffs = 3 DC + 45 rest (degree 3)
-    colors_sh = torch.nn.Parameter(torch.cat([colors_init, torch.zeros(n_points, n_sh_rest, device=device)], dim=-1))
+    C0 = 0.28209479177387814
+    colors_sh_dc = (colors_init - 0.5) / C0
+    colors_sh = torch.nn.Parameter(torch.cat([colors_sh_dc, torch.zeros(n_points, n_sh_rest, device=device)], dim=-1))
 
-    params = [means, quats, scales, opacities, colors_sh]
-    optimizer = torch.optim.Adam(params, lr=1e-3)
+    params = [
+        {'params': [means], 'lr': 0.00016, 'name': 'xyz'},
+        {'params': [quats], 'lr': 0.001, 'name': 'rotation'},
+        {'params': [scales], 'lr': 0.005, 'name': 'scaling'},
+        {'params': [opacities], 'lr': 0.05, 'name': 'opacity'},
+        {'params': [colors_sh], 'lr': 0.0025, 'name': 'features'},
+    ]
+    optimizer = torch.optim.Adam(params)
 
-    # Learning rate scheduling
-    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
+    def get_xyz_lr(iteration, lr_init=0.00016, lr_final=0.0000016, max_steps=30000):
+        t = min(iteration, max_steps) / max_steps
+        return lr_init * (lr_final / lr_init) ** t
 
     imgs_gt = torch.tensor(np.stack(valid_imgs) / 255.0, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
 
@@ -339,28 +374,28 @@ def train(args):
             sh_degree=3,
         )
 
-        renders = renders.permute(0, 3, 1, 2)  # (C, H, W, 3) → (C, 3, H, W)
-        loss = F.mse_loss(renders, imgs_gt)
-
-        # L1 loss (helps with sharpness)
-        loss = loss + 0.8 * F.l1_loss(renders, imgs_gt)
-
-        # Scale regularization (prevent excessively large Gaussians)
-        scale_reg = scales_act.norm(dim=-1).mean() * 0.01
-        loss = loss + scale_reg
+        renders = renders.permute(0, 3, 1, 2)  # (B, H, W, 3) → (B, 3, H, W)
+        L1 = F.l1_loss(renders, imgs_gt)
+        ssim_val = ssim(renders, imgs_gt)
+        loss = (1.0 - 0.2) * L1 + 0.2 * (1.0 - ssim_val)
 
         loss.backward()
 
-        # Accumulate gradients for densification
-        if it < n_iterations - 1 and it % densify_interval == 0 and means.grad is not None:
+        # Accumulate gradients for densification (every iteration)
+        if means.grad is not None:
             with torch.no_grad():
                 grad_accum += means.grad.detach() ** 2
                 count_accum += 1
 
+        # Update position learning rate before step
+        for param_group in optimizer.param_groups:
+            if param_group.get("name") == "xyz":
+                param_group["lr"] = get_xyz_lr(it)
+
         optimizer.step()
 
-        # Densification
-        if it > 0 and it % densify_interval == 0:
+        # Densification (only up to 15000 iterations, matching original)
+        if it > 0 and it % densify_interval == 0 and it < 15000:
             with torch.no_grad():
                 new_means, new_scales, new_opacities, grad_accum, count_accum = \
                     densification(means.data, scales_act.data, opacities.data,
@@ -380,9 +415,14 @@ def train(args):
                     opacities = torch.nn.Parameter(new_opacities)
                     colors_sh = torch.nn.Parameter(colors_sh_new)
                     
-                    params = [means, quats, scales, opacities, colors_sh]
-                    optimizer = torch.optim.Adam(params, lr=1e-3 * (0.99 ** (it // 1000)))
-                    lr_scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
+                    params = [
+                        {'params': [means], 'lr': 0.00016, 'name': 'xyz'},
+                        {'params': [quats], 'lr': 0.001, 'name': 'rotation'},
+                        {'params': [scales], 'lr': 0.005, 'name': 'scaling'},
+                        {'params': [opacities], 'lr': 0.05, 'name': 'opacity'},
+                        {'params': [colors_sh], 'lr': 0.0025, 'name': 'features'},
+                    ]
+                    optimizer = torch.optim.Adam(params)
 
                 if n_new > 0:
                     pbar.set_postfix({"gaussians": n_new, "loss": f"{loss.item():.6f}"})
