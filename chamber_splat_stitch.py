@@ -48,7 +48,8 @@ sys.path.insert(0, str(SCRIPTS))
 
 # Mount Google Drive (Colab only)
 DRIVE_MOUNT = Path('/content/drive')
-if DRIVE_MOUNT.exists():
+ON_COLAB = DRIVE_MOUNT.exists()
+if ON_COLAB:
     print("Google Drive detected — mounting...")
     from google.colab import drive
     drive.mount('/content/drive')
@@ -62,11 +63,22 @@ CHECKPOINT = WORKSPACE / 'stitch_session.json'
 print(f"Workspace: {WORKSPACE}")
 print(f"Python: {sys.version}")
 
+REPO_URL = "https://github.com/kaarthik-balakrishnan/arena-3dgs"
+RAW_URL = "https://raw.githubusercontent.com/kaarthik-balakrishnan/arena-3dgs/main"
+
 # %% [markdown]
 # ## Cell 1b: Load the chamber_splat module
 
 # %%
-# Copy the module to the right location if needed
+# On Colab: download the module from GitHub
+if ON_COLAB and not (SCRIPTS / 'chamber_splat.py').exists():
+    print("Downloading chamber_splat.py from GitHub...")
+    SCRIPTS.mkdir(exist_ok=True)
+    url = ("https://raw.githubusercontent.com/"
+           "kaarthik-balakrishnan/arena-3dgs/main/scripts/chamber_splat.py")
+    urllib.request.urlretrieve(url, SCRIPTS / 'chamber_splat.py')
+    print("  Done.")
+
 if not (SCRIPTS / 'chamber_splat.py').exists():
     print("ERROR: scripts/chamber_splat.py not found!")
     print("Upload chamber_splat.py to the scripts/ directory.")
@@ -161,6 +173,37 @@ else:
 
 # %%
 IMAGE_DIR = BASE / 'splat-files-processed'
+
+# On Colab, download images from GitHub if not present
+if ON_COLAB and len(list(IMAGE_DIR.glob('*.jpg'))) < 90:
+    print("Downloading 91 arena images from GitHub...")
+    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    import urllib.request
+    # Get file list from the repo
+    url = f"{RAW_URL}/splat-files-processed"
+    # Download known filenames (all ChamberX_*.jpg)
+    import subprocess
+    result = subprocess.run(
+        ["git", "ls-tree", "--name-only", "main", "splat-files-processed/"],
+        capture_output=True, text=True, cwd=BASE
+    )
+    if result.returncode != 0:
+        # Fallback: generate names from our naming convention
+        filenames = [f"{c}_{n:02d}.jpg" for c in range(1,10) for n in range(1,27)]
+    else:
+        filenames = [f.split('/')[-1] for f in result.stdout.strip().split('\n')
+                     if f.endswith('.jpg')]
+    
+    for fname in filenames:
+        if not (IMAGE_DIR / fname).exists():
+            try:
+                urllib.request.urlretrieve(
+                    f"{RAW_URL}/splat-files-processed/{fname}",
+                    IMAGE_DIR / fname
+                )
+            except Exception as e:
+                print(f"  Failed to download {fname}: {e}")
+    print(f"  Downloaded {len(list(IMAGE_DIR.glob('*.jpg')))} images")
 
 # Fix naming anomaly
 fix_CHamber1_08(IMAGE_DIR)
