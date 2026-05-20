@@ -86,6 +86,9 @@ if ON_COLAB or not module_path.exists():
     else:
         print("Downloading chamber_splat.py from GitHub...")
     module_path.unlink(missing_ok=True)
+    # Also remove any cached bytecode
+    for cache in SCRIPTS.glob('__pycache__/chamber_splat*'):
+        cache.unlink(missing_ok=True)
     SCRIPTS.mkdir(exist_ok=True)
     url = ("https://raw.githubusercontent.com/"
            "kaarthik-balakrishnan/arena-3dgs/main/scripts/chamber_splat.py")
@@ -101,6 +104,11 @@ if not module_path.exists():
     print("  https://github.com/kaarthik-balakrishnan/arena-3dgs")
     print("Or manually place scripts/chamber_splat.py from the repo.")
     raise SystemExit(1)
+
+# Force re-import: purge any cached version from previous cell runs
+import importlib
+if 'scripts.chamber_splat' in sys.modules:
+    del sys.modules['scripts.chamber_splat']
 
 from scripts.chamber_splat import (
     parse_image_name, categorize_images, print_dataset_summary,
