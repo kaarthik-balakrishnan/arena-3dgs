@@ -14,7 +14,7 @@ Naming convention:
   ChamberX_NN_topview.jpg      — top-down angled view showing walls of Chamber X
   ChamberX_NN_outside.jpg      — exterior shot near Chamber X (optional)
 """
-import os, sys, re, struct, time, json, sqlite3, shutil, warnings
+import os, sys, re, struct, time, json, sqlite3, shutil, subprocess, warnings
 from pathlib import Path
 from collections import defaultdict
 import numpy as np
