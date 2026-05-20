@@ -364,8 +364,9 @@ else:
 
         model_dir = run_chamber_colmap(
             cid, imgs, CHAMBER_COLMAP_DIR, IMAGE_DIR,
-            options={'max_features': 32768, 'peak_threshold': 0.015,
-                     'ba_local_iters': 25, 'ba_global_iters': 50},
+            options={'max_features': 65536, 'peak_threshold': 0.01,
+                     'ba_local_iters': 25, 'ba_global_iters': 50,
+                     'min_model_size': 2, 'multiple_models': '0'},
         )
 
         if model_dir is not None:

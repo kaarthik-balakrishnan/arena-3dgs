@@ -468,9 +468,9 @@ def run_colmap_mapper(database_path, image_path, output_path, options=None):
         str(opts.get('ba_local_iters', 25)),
         "--Mapper.ba_global_max_num_iterations",
         str(opts.get('ba_global_iters', 50)),
-        "--Mapper.multiple_models", "1",
+        "--Mapper.multiple_models", str(opts.get('multiple_models', "1")),
         "--Mapper.max_num_models", "50",
-        "--Mapper.min_model_size", "3",
+        "--Mapper.min_model_size", str(opts.get('min_model_size', 3)),
     ]
     print(f"  Running: colmap mapper ...")
     ret = subprocess.run(cmd)
