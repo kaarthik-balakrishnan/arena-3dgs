@@ -237,10 +237,20 @@ def train(args):
     print(f"  Loaded {n_views} training views")
 
     img_h, img_w = valid_imgs[0].shape[:2]
+    max_res = getattr(args, 'max_res', 1600)
+    scale = min(max_res / max(img_h, img_w), 1.0)
+    if scale < 1.0:
+        new_w = round(img_w * scale)
+        new_h = round(img_h * scale)
+        print(f"  Downscaling images: {img_w}x{img_h} → {new_w}x{new_h} (scale={scale:.3f})")
+        for i in range(n_views):
+            valid_imgs[i] = cv2.resize(valid_imgs[i], (new_w, new_h), interpolation=cv2.INTER_AREA)
+        img_w, img_h = new_w, new_h
+
     cam = cams[list(cams.keys())[0]]
-    fx = cam['params'][0]
-    cx = cam['params'][1]
-    cy = cam['params'][2]
+    fx = cam['params'][0] * scale
+    cx = cam['params'][1] * scale
+    cy = cam['params'][2] * scale
 
     K = torch.tensor([[fx, 0, cx], [0, fx, cy], [0, 0, 1]], dtype=torch.float32, device=device)
 
@@ -439,6 +449,8 @@ if __name__ == "__main__":
                         help="Maximum number of Gaussians (default: 500000)")
     parser.add_argument("--log-interval", type=int, default=1000,
                         help="Log every N iterations (default: 1000)")
+    parser.add_argument("--max-res", type=int, default=1600,
+                        help="Maximum image resolution (longest side, default: 1600)")
     args = parser.parse_args()
 
     train(args)
