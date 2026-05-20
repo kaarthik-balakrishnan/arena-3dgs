@@ -32,7 +32,7 @@
 # **Spatial layout:** Chamber1 — Chamber2 — ... — Chamber9 (linear chain)
 
 # %% [markdown]
-# ## Cell 1: Setup — Mount Drive & Install Dependencies
+# ### Cell 1: Setup — Mount Drive & Install Dependencies
 
 # %%
 import os, sys, json, time, shutil, subprocess, struct, re
@@ -75,7 +75,7 @@ REPO_URL = "https://github.com/kaarthik-balakrishnan/arena-3dgs"
 RAW_URL = "https://raw.githubusercontent.com/kaarthik-balakrishnan/arena-3dgs/main"
 
 # %% [markdown]
-# ## Cell 1b: Load the chamber_splat module
+# ### Cell 1b: Load the chamber_splat module
 
 # %%
 # Download the module from GitHub (always on Colab to get latest version)
@@ -128,7 +128,7 @@ from scripts.chamber_splat import (
 )
 
 # %% [markdown]
-# ## Cell 1c: Install COLMAP (Colab)
+# ### Cell 1c: Install COLMAP (Colab)
 
 # %%
 # Check if COLMAP is available
@@ -157,7 +157,7 @@ if not colmap_available:
     print("Proceeding with existing COLMAP data if available.")
 
 # %% [markdown]
-# ## Cell 1d: Verify Training Dependencies (PyTorch, gsplat, plyfile)
+# ### Cell 1d: Verify Training Dependencies (PyTorch, gsplat, plyfile)
 # Checks all packages needed for 3DGS training. Sets HAS_GPU only when
 # a GPU (CUDA/MPS) is detected AND all training packages are importable.
 
@@ -227,7 +227,7 @@ if not HAS_GPU:
     print("   Cross-chamber alignment and unified model will still work.")
 
 # %% [markdown]
-# ## Cell 2: Load Session State (Checkpoint Resume)
+# ### Cell 2: Load Session State (Checkpoint Resume)
 
 # %%
 state = load_checkpoint(CHECKPOINT)
@@ -253,7 +253,7 @@ else:
     print("No prior session — starting fresh.")
 
 # %% [markdown]
-# ## Cell 3: Data Categorization & Filtering
+# ### Cell 3: Data Categorization & Filtering
 # Uses the naming convention to classify every image by chamber and type.
 
 # %%
@@ -370,7 +370,7 @@ save_checkpoint(CHECKPOINT, state)
 print("\n✅ Cell 3 complete")
 
 # %% [markdown]
-# ## Cell 4: Per-Chamber COLMAP
+# ### Cell 4: Per-Chamber COLMAP
 # Each chamber gets its own independent SfM reconstruction.
 # This avoids the lighting inconsistency problem — dark chambers don't
 # pollute bright ones.
@@ -465,7 +465,7 @@ else:
 print(f"\n✅ Cell 4 complete: {len(chamber_models)} chambers processed")
 
 # %% [markdown]
-# ## Cell 4b: Per-Chamber 3DGS Training
+# ### Cell 4b: Per-Chamber 3DGS Training
 # Trains individual 3DGS models for each chamber's COLMAP model so you can
 # visualize each chamber independently in Unity before cross-chamber alignment.
 #
@@ -520,7 +520,7 @@ else:
         print("You can still run alignment and unified training on Colab later.")
 
 # %% [markdown]
-# ## Cell 5: Cross-Chamber Alignment
+# ### Cell 5: Cross-Chamber Alignment
 # Hybrid alignment using camera poses AND bridge-point descriptor matching.
 #
 # **Algorithm:**
@@ -537,6 +537,7 @@ CHAMBER_MODELS_DIR = CHAMBER_COLMAP_DIR
 
 state.setdefault('transforms', {})
 state.setdefault('chamber_models', {})
+completed = state.get('completed_steps', [])
 
 if 'cross_chamber_alignment' in completed:
     print("Cross-chamber alignment already done. Loading transforms...")
@@ -673,10 +674,16 @@ else:
 print(f"\n✅ Cell 5 complete: transforms for {len(transforms)} chambers")
 
 # %% [markdown]
-# ## Cell 6: Unified Sparse Model
+# ### Cell 6: Unified Sparse Model
 # Transform all chamber models into Chamber1's coordinate frame and merge.
 
 # %%
+completed = state.get('completed_steps', [])
+transforms = {}
+for cid_str, t_data in state.get('transforms', {}).items():
+    cid = int(cid_str)
+    transforms[cid] = (np.array(t_data['R']), np.array(t_data['t']))
+
 if 'unified_model' in completed:
     print("Unified model already built. Loading...")
     unified_dir = WORKSPACE / 'unified_model' / 'txt'
@@ -717,7 +724,7 @@ print(f"\n✅ Cell 6 complete: unified model with "
       f"{state.get('unified_stats', {}).get('n_points', 0):,} points")
 
 # %% [markdown]
-# ## Cell 7: Setup 3DGS Training Input
+# ### Cell 7: Setup 3DGS Training Input
 # Prepares the `gaussian-splatting/input/` directory with images + COLMAP model.
 
 # %%
@@ -745,11 +752,12 @@ else:
         print(f"  Zip: {zip_path}")
 
 # %% [markdown]
-# ## Cell 8A: Train Unified 3DGS (GPU required)
+# ### Cell 8A: Train Unified 3DGS (GPU required)
 # Single end-to-end 3DGS training on the unified sparse model.
 # This gives the best quality result.
 
 # %%
+completed = state.get('completed_steps', [])
 if 'unified_3dgs_trained' in completed:
     print("Unified 3DGS already trained.")
     ply_files = list(WORKSPACE.glob('arena_unified_*.ply'))
@@ -803,7 +811,7 @@ else:
         print(f"  1. Download unified model: {WORKSPACE}/unified_model_for_colab.zip")
 
 # %% [markdown]
-# ## Cell 8B: Load Per-Chamber 3DGS Models
+# ### Cell 8B: Load Per-Chamber 3DGS Models
 # Loads per-chamber 3DGS models (trained earlier in Cell 4b).
 # If you skipped Cell 4b (no GPU), this cell can still train them now.
 
@@ -822,6 +830,7 @@ if state.get('per_chamber_3dgs_done'):
         else:
             print(f"  Chamber {cid}: PLY not found at {p}")
 else:
+    completed = state.get('completed_steps', [])
     if HAS_GPU:
         from scripts.train_3dgs_enhanced import train
         import argparse
@@ -864,7 +873,7 @@ else:
         print("No GPU available. Skip per-chamber training or use Colab.")
 
 # %% [markdown]
-# ## Cell 9: Gaussian Stitching
+# ### Cell 9: Gaussian Stitching
 # Stitches per-chamber 3DGS models into a unified gaussian cloud using
 # transforms computed from camera-pose alignment and bridge-point matching.
 #
@@ -873,6 +882,12 @@ else:
 # threshold to the previous chamber's cloud are removed.
 
 # %%
+if 'transforms' not in locals():
+    transforms = {}
+    for cid_str, t_data in state.get('transforms', {}).items():
+        cid = int(cid_str)
+        transforms[cid] = (np.array(t_data['R']), np.array(t_data['t']))
+
 if state.get('stitched_ply_done'):
     print("Stitched PLY already built.")
 else:
@@ -981,7 +996,7 @@ else:
         print("No per-chamber models found. Run Cell 4b first, or use unified training.")
 
 # %% [markdown]
-# ## Cell 10: Compress & Export
+# ### Cell 10: Compress & Export
 
 # %%
 # Find the best PLY to compress
@@ -1008,7 +1023,7 @@ else:
     print("No PLY files found. Train first (Cell 8A or 8B).")
 
 # %% [markdown]
-# ## Summary: Algorithm Overview
+# ### Summary: Algorithm Overview
 #
 # ```
 #                  ┌──────────────────┐
@@ -1061,7 +1076,7 @@ else:
 # chambers and 34 top-views with different perspective).
 
 # %% [markdown]
-# ## Appendix: Local Viewing
+# ### Appendix: Local Viewing
 
 # %%
 print("To view the result locally (CPU only, no GPU needed):")

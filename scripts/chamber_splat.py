@@ -36,7 +36,7 @@ def parse_image_name(filename):
     return {
         'source': int(m.group(1)),
         'seq': int(m.group(2)),
-        'has_target': m.group(2) is not None,
+        'has_target': m.group(4) is not None,
         'target': int(m.group(4)) if m.group(4) else None,
         'view': m.group(5) if m.group(5) else 'interior',
         'stem': stem,
@@ -577,7 +577,6 @@ def get_bridge_descriptors(database_path, bridge_point_ids,
                 continue
 
             blob = row[0]
-            desc_data = np.frombuffer(blob, dtype=np.uint8)
             cur.execute(
                 "SELECT rows, cols FROM descriptors WHERE image_id=?",
                 (db_id,)
@@ -587,10 +586,7 @@ def get_bridge_descriptors(database_path, bridge_point_ids,
                 continue
             rows, cols = dims
             if pt2d_idx < rows:
-                start = pt2d_idx * cols
                 desc_data = np.frombuffer(blob, dtype=np.uint8)
-                # Read cols bytes for this keypoint
-                # Each descriptor is stored as a row of cols bytes
                 start_byte = pt2d_idx * cols
                 end_byte = start_byte + cols
                 desc = desc_data[start_byte:end_byte]
@@ -653,6 +649,7 @@ def compute_rigid_transform_ransac(matched_pairs, pos_X, pos_Y, max_iters=2000):
     pts_Y = np.array([pos_Y[j] for _, j in matched_pairs])
 
     best_inliers = []
+    best_n = 0
     best_R = None
     best_t = None
     n_pts = len(matched_pairs)
@@ -679,12 +676,13 @@ def compute_rigid_transform_ransac(matched_pairs, pos_X, pos_Y, max_iters=2000):
         inlier_mask = err < 0.1  # 10 cm threshold
         n_inliers = inlier_mask.sum()
 
-        if n_inliers > len(best_inliers):
+        if n_inliers > best_n:
+            best_n = n_inliers
             best_inliers = inlier_mask
             best_R = R
             best_t = t
 
-    if best_R is None or len(best_inliers) < 4:
+    if best_R is None or best_n < 4:
         return None, [], 0
 
     # Refine with all inliers
@@ -936,14 +934,21 @@ def _align_via_pnp(model_X, model_Y, only_X, only_Y,
 
             matches = bf.match(desc, desc_y)
             for m in matches:
-                pt_idx = m.trainIdx
-                if pt_idx < len(img_data['points2D']):
-                    pt_info = img_data['points2D'][pt_idx]
-                    if pt_info['point3D_id'] > 0 and pt_info['point3D_id'] < 2**63:
-                        pts_2d.append(kp[m.queryIdx].pt)
-                        pts_3d.append(
-                            model_Y['points3d'][pt_info['point3D_id']]['xyz']
-                        )
+                y_kp = kp_y[m.trainIdx]
+                yx, yy = y_kp.pt
+                best_dist = 5.0
+                best_pt = None
+                for pt2d in img_data['points2D']:
+                    if pt2d['point3D_id'] > 0 and pt2d['point3D_id'] < 2**63:
+                        d = np.hypot(pt2d['x'] - yx, pt2d['y'] - yy)
+                        if d < best_dist:
+                            best_dist = d
+                            best_pt = pt2d
+                if best_pt is not None:
+                    pts_2d.append(kp[m.queryIdx].pt)
+                    pts_3d.append(
+                        model_Y['points3d'][best_pt['point3D_id']]['xyz']
+                    )
 
         if len(pts_2d) >= 8:
             pts_2d = np.array(pts_2d, dtype=np.float32)
@@ -1050,7 +1055,6 @@ def merge_models_into_unified(chamber_models, transforms, base_chamber=1):
         'images': {},
         'points3d': {},
     }
-    camera_offset = 0
     image_offset = 0
     point_offset = 0
     next_cam_id = 1

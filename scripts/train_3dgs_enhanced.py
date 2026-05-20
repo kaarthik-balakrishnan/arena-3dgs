@@ -9,9 +9,8 @@ Usage:
 This script auto-installs dependencies (PyTorch, gsplat) on first run if missing.
 Designed for GPU (CUDA/MPS) machines.
 """
-import os, sys, math, time, struct
+import os, sys
 from pathlib import Path
-import warnings
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -283,7 +282,8 @@ def train(args):
     quats = torch.nn.Parameter(quats)
     scales = torch.nn.Parameter(torch.log(scales))
     opacities = torch.nn.Parameter(torch.log(opacities / (1 - opacities + 1e-10)))
-    colors_sh = torch.nn.Parameter(torch.cat([colors_init, torch.zeros(n_points, 15, device=device)], dim=-1))
+    n_sh_rest = 45  # total 48 SH coeffs = 3 DC + 45 rest (degree 3)
+    colors_sh = torch.nn.Parameter(torch.cat([colors_init, torch.zeros(n_points, n_sh_rest, device=device)], dim=-1))
 
     params = [means, quats, scales, opacities, colors_sh]
     optimizer = torch.optim.Adam(params, lr=1e-3)
@@ -364,7 +364,7 @@ def train(args):
                     if n_new > old_n:
                         n_added = n_new - old_n
                         quats.data = torch.cat([quats.data, quats.data[:1].repeat(n_added, 1)])
-                        colors_sh.data = torch.cat([colors_sh.data, torch.zeros(n_added, 48, device=device)])
+                        colors_sh.data = torch.cat([colors_sh.data, torch.zeros(n_added, colors_sh.shape[1], device=device)])
                     
                     params = [means, quats, scales, opacities, colors_sh]
                     optimizer = torch.optim.Adam(params, lr=1e-3 * (0.99 ** (it // 1000)))
