@@ -134,7 +134,7 @@ from scripts.chamber_splat import (
 # Check if COLMAP is available
 colmap_available = False
 try:
-    subprocess.run(['colmap', 'help'], capture_output=True, check=True)
+    result = subprocess.run(['colmap', 'help'], capture_output=True, check=True)
     colmap_available = True
     print("COLMAP already installed")
 except (FileNotFoundError, subprocess.CalledProcessError):
@@ -145,36 +145,86 @@ if not colmap_available and ON_COLAB:
     print("  GPU used for 3DGS training; COLMAP uses CPU to avoid CUDA driver mismatch")
     subprocess.run(['apt-get', 'update', '-qq'], check=True)
     subprocess.run(['apt-get', 'install', '-y', '-qq', 'colmap'], check=True)
-    # Don't use GPU for SIFT (avoids CUDA version mismatch crash on Colab T4)
-    subprocess.run(['colmap', 'help'], capture_output=True)
-    colmap_available = True
-    # Verify
     result = subprocess.run(['colmap', 'help'], capture_output=True, text=True)
-    print(result.stdout[:200])
-    colmap_available = True
+    if result.returncode == 0:
+        colmap_available = True
+        print("  COLMAP installed successfully")
+    else:
+        print("  COLMAP installation failed")
 
 if not colmap_available:
     print("WARNING: COLMAP not available. Install locally: brew install colmap")
     print("Proceeding with existing COLMAP data if available.")
 
 # %% [markdown]
-# ## Cell 1d: Install PyTorch + 3DGS (for GPU training)
+# ## Cell 1d: Verify Training Dependencies (PyTorch, gsplat, plyfile)
+# Checks all packages needed for 3DGS training. Sets HAS_GPU only when
+# a GPU (CUDA/MPS) is detected AND all training packages are importable.
 
 # %%
 HAS_GPU = False
-try:
+TRAINING_DEPS_OK = False
+missing_deps = []
+
+def check_dep(name, import_name=None):
+    try:
+        __import__(import_name or name)
+        return True
+    except ImportError:
+        missing_deps.append(name)
+        return False
+
+# ── Torch + GPU check ──
+if check_dep('torch'):
     import torch
-    if torch.cuda.is_available():
+    HAS_CUDA = torch.cuda.is_available()
+    HAS_MPS = torch.backends.mps.is_available()
+    if HAS_CUDA:
         print(f"CUDA available: {torch.cuda.get_device_name(0)}")
-        HAS_GPU = True
-    elif torch.backends.mps.is_available():
+    elif HAS_MPS:
         print("MPS available (Apple Silicon)")
-        HAS_GPU = True
     else:
         print("PyTorch available but no GPU detected")
-except ImportError:
-    print("PyTorch not installed. Training will require Colab T4 GPU.")
-    print("For Colab: Runtime → Change runtime type → T4 GPU")
+else:
+    HAS_CUDA = False
+    HAS_MPS = False
+    print("PyTorch not installed.")
+
+# ── Training libraries ──
+check_dep('gsplat')
+check_dep('plyfile')
+check_dep('cv2', 'cv2')
+check_dep('tqdm')
+
+# ── Final verdict ──
+if missing_deps:
+    print(f"\nMissing packages: {', '.join(missing_deps)}")
+    if ON_COLAB:
+        print("Installing missing packages...")
+        import subprocess as _sp
+        for _pkg in list(missing_deps):
+            _pkg_name = 'opencv-python' if _pkg == 'cv2' else _pkg
+            _sp.check_call([sys.executable, '-m', 'pip', 'install', '-q', _pkg_name])
+        missing_deps.clear()
+        # Re-check
+        for _name in ['gsplat', 'plyfile', 'cv2', 'tqdm']:
+            if not check_dep(_name, 'cv2' if _name == 'cv2' else _name):
+                pass
+        print("  Done.")
+else:
+    print("All training packages available.")
+
+TRAINING_DEPS_OK = len(missing_deps) == 0
+HAS_GPU = (HAS_CUDA or HAS_MPS) and TRAINING_DEPS_OK
+
+if not HAS_GPU:
+    print("\n⚠️  GPU training not available.")
+    print(f"   GPU detected: {'Yes' if HAS_CUDA or HAS_MPS else 'No'}")
+    print(f"   All deps installed: {'Yes' if TRAINING_DEPS_OK else 'No'}")
+    if ON_COLAB:
+        print("   → Runtime → Change runtime type → T4 GPU")
+    print("   Per-chamber and unified 3DGS training will be skipped.")
+    print("   Cross-chamber alignment and unified model will still work.")
 
 # %% [markdown]
 # ## Cell 2: Load Session State (Checkpoint Resume)
