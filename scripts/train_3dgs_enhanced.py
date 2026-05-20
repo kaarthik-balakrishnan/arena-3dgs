@@ -349,7 +349,7 @@ def train(args):
         loss.backward()
 
         # Accumulate gradients for densification
-        if it < n_iterations - 1 and it % densify_interval == 0 and hasattr(means, 'grad'):
+        if it < n_iterations - 1 and it % densify_interval == 0 and means.grad is not None:
             with torch.no_grad():
                 grad_accum += means.grad.detach() ** 2
                 count_accum += 1

@@ -484,7 +484,7 @@ else:
 
         per_chamber_models = {}
         for cid, model in sorted(chamber_models.items()):
-            if len(model['images']) < 5:
+            if len(model['images']) < 2:
                 print(f"Chamber {cid}: too few images ({len(model['images'])}), skipping")
                 continue
 
@@ -838,7 +838,7 @@ else:
 
         per_chamber_models = {}
         for cid, model in sorted(chamber_models.items()):
-            if len(model['images']) < 5:
+            if len(model['images']) < 2:
                 print(f"Chamber {cid}: too few images ({len(model['images'])}), skipping")
                 continue
 
