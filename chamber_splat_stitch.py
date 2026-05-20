@@ -111,8 +111,8 @@ for script_name in REQUIRED_SCRIPTS:
 
 # Force re-import: purge any cached version from previous cell runs
 import importlib
-for _mod in ['scripts.chamber_splat', 'scripts.train_3dgs_enhanced']:
-    if _mod in sys.modules:
+for _mod in list(sys.modules):
+    if 'chamber_splat' in _mod or 'train_3dgs' in _mod:
         del sys.modules[_mod]
 
 from scripts.chamber_splat import (
