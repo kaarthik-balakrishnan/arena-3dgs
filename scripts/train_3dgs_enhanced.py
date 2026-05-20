@@ -283,7 +283,7 @@ def train(args):
     quats = torch.nn.Parameter(quats)
     scales = torch.nn.Parameter(torch.log(scales))
     opacities = torch.nn.Parameter(torch.log(opacities / (1 - opacities + 1e-10)))
-    colors_sh = torch.nn.Parameter(torch.cat([colors_init, torch.zeros(n_points, 15)], dim=-1))
+    colors_sh = torch.nn.Parameter(torch.cat([colors_init, torch.zeros(n_points, 15, device=device)], dim=-1))
 
     params = [means, quats, scales, opacities, colors_sh]
     optimizer = torch.optim.Adam(params, lr=1e-3)

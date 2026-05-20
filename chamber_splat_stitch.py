@@ -521,14 +521,16 @@ else:
 
 # %% [markdown]
 # ## Cell 5: Cross-Chamber Alignment
-# Uses transition images registered in both adjacent chamber models to
-# compute rigid transforms directly from camera poses.
+# Hybrid alignment using camera poses AND bridge-point descriptor matching.
 #
 # **Algorithm:**
-# 1. Find transition images that registered in both adjacent chamber models
-# 2. For each shared image, compute relative transform: R = R_X @ R_Y.T, t = t_X - R @ t_Y
-# 3. With multiple shared images, robustly average rotations (SVD of median) and translations (median)
-# 4. Chain transforms: all chambers → Chamber1's coordinate frame
+# 1. Find transition images registered in both adjacent chamber models → camera-pose alignment
+# 2. Extract bridge points (3D points observed by transition images showing the other chamber)
+# 3. Read SIFT descriptors from COLMAP SQLite databases for each bridge point
+# 4. Match bridge point descriptors across chambers (brute-force + Lowe's ratio test)
+# 5. RANSAC on matched 3D-3D positions → rigid transform (R, t)
+# 6. Combine camera-pose + bridge-point estimates robustly
+# 7. Chain transforms: all chambers → Chamber1's coordinate frame
 
 # %%
 CHAMBER_MODELS_DIR = CHAMBER_COLMAP_DIR
@@ -567,13 +569,19 @@ else:
             print(f"  Skipping {a}↔{b}: not all models available")
             continue
 
+        # Database paths for bridge-point descriptor extraction
+        db_a = CHAMBER_COLMAP_DIR / f'chamber_{a}' / 'database.db' if CHAMBER_COLMAP_DIR else None
+        db_b = CHAMBER_COLMAP_DIR / f'chamber_{b}' / 'database.db' if CHAMBER_COLMAP_DIR else None
+
         # Compute transform to align Chamber{B} into Chamber{A}'s frame
         print(f"\n{'─'*50}")
         print(f"  Aligning Chamber {b} → Chamber {a}")
         print(f"{'─'*50}")
 
         result = compute_chamber_transform(
-            chamber_models[a], chamber_models[b], a, b
+            chamber_models[a], chamber_models[b], a, b,
+            db_path_X=db_a, db_path_Y=db_b,
+            images_source=IMAGE_DIR,
         )
 
         if result[0] is not None:
@@ -585,7 +593,9 @@ else:
             # Try the other direction
             print(f"  Trying reverse alignment: Chamber {a} → Chamber {b}")
             result_rev = compute_chamber_transform(
-                chamber_models[b], chamber_models[a], b, a
+                chamber_models[b], chamber_models[a], b, a,
+                db_path_X=db_b, db_path_Y=db_a,
+                images_source=IMAGE_DIR,
             )
             if result_rev[0] is not None:
                 R_rev, t_rev = result_rev[0]
@@ -854,13 +864,13 @@ else:
         print("No GPU available. Skip per-chamber training or use Colab.")
 
 # %% [markdown]
-# ## Cell 9: Gaussian Stitching (Experimental)
-# If you trained per-chamber 3DGS models, this cell stitches them into
-# a unified gaussian cloud by applying the computed transforms.
+# ## Cell 9: Gaussian Stitching
+# Stitches per-chamber 3DGS models into a unified gaussian cloud using
+# transforms computed from camera-pose alignment and bridge-point matching.
 #
-# **Method:** Load each chamber's PLY, apply (R, t) to gaussian means and
-# quaternions, concatenate all gaussians into one big cloud. Optionally
-# prune gaussians in overlap regions.
+# Overlap regions (from transition images) get duplicate gaussians —
+# these are pruned via distance-based culling: gaussians closer than a
+# threshold to the previous chamber's cloud are removed.
 
 # %%
 if state.get('stitched_ply_done'):
@@ -873,13 +883,19 @@ else:
         except ImportError:
             !pip install -q plyfile
             from plyfile import PlyData, PlyElement
+        from scipy.spatial.transform import Rotation as R_scipy
 
         print("Loading per-chamber models and applying transforms...")
         stitched_arrays = []
+
+        # Track accumulated point cloud for overlap pruning
+        accumulated_xyz = None
+
         for cid_str, ply_path_str in sorted(per_chamber_paths.items()):
             cid = int(cid_str)
             ply_path = Path(ply_path_str)
             if not ply_path.exists():
+                print(f"  ⚠️  Chamber {cid}: PLY not found, skipping")
                 continue
 
             print(f"  Chamber {cid}: loading {ply_path.name}")
@@ -903,10 +919,6 @@ else:
             new_data['z'] = xyz_transformed[:, 2]
 
             # Transform rotations
-            # quat is (w, x, y, z). We need to rotate the quat by R.
-            # The gaussian rotation matrix is derived from the quat.
-            # new_quat = quaternion_from_matrix(R @ matrix_from_quat(quat))
-            from scipy.spatial.transform import Rotation as R_scipy
             quats = np.column_stack([vertex['rot_0'], vertex['rot_1'],
                                       vertex['rot_2'], vertex['rot_3']])
             rot_matrices = R_scipy.from_quat(quats).as_matrix()
@@ -917,15 +929,38 @@ else:
             new_data['rot_2'] = new_quats[:, 2]
             new_data['rot_3'] = new_quats[:, 3]
 
-            stitched_arrays.append(new_data)
+            # Overlap pruning: remove gaussians too close to previous chambers
+            if accumulated_xyz is not None and len(accumulated_xyz) > 0:
+                from scipy.spatial import cKDTree
+                tree = cKDTree(accumulated_xyz)
+                # For each gaussian in the new chamber, find nearest neighbor
+                # If too close (< 2 cm), it's likely an overlap duplicate
+                distances, _ = tree.query(xyz_transformed, k=1)
+                overlap_mask = distances > 0.02  # 2 cm threshold
+                n_pruned = n - overlap_mask.sum()
+                if n_pruned > 0:
+                    print(f"    Pruned {n_pruned} overlapping gaussians ({n_pruned/n*100:.1f}%)")
+                new_data = new_data[overlap_mask]
+                xyz_transformed = xyz_transformed[overlap_mask]
+
+            if len(new_data) > 0:
+                stitched_arrays.append(new_data)
+                # Update accumulated point cloud (sample for performance)
+                if len(xyz_transformed) > 50000:
+                    idx = np.random.choice(len(xyz_transformed), 50000, replace=False)
+                    accumulated_xyz = xyz_transformed[idx] if accumulated_xyz is None \
+                        else np.vstack([accumulated_xyz, xyz_transformed[idx]])
+                else:
+                    accumulated_xyz = xyz_transformed if accumulated_xyz is None \
+                        else np.vstack([accumulated_xyz, xyz_transformed])
 
         if stitched_arrays:
             stitched = np.concatenate(stitched_arrays)
             print(f"\nStitched model: {len(stitched)} gaussians")
 
-            # Prune distant / low-opacity gaussians
+            # Global pruning of low-opacity gaussians
             if len(stitched) > 1000000:
-                print("  Pruning low-opacity gaussians...")
+                print("  Global pruning: removing low-opacity gaussians...")
                 mask = stitched['opacity'] > 0.01
                 stitched = stitched[mask]
                 print(f"  After pruning: {len(stitched)} gaussians")
@@ -940,8 +975,10 @@ else:
             state['stitched_ply_path'] = str(output_path)
             state['stitched_gaussian_count'] = len(stitched)
             save_checkpoint(CHECKPOINT, state)
+        else:
+            print("  No chamber models to stitch.")
     else:
-        print("No per-chamber models found. Run Cell 8B first, or use unified training.")
+        print("No per-chamber models found. Run Cell 4b first, or use unified training.")
 
 # %% [markdown]
 # ## Cell 10: Compress & Export

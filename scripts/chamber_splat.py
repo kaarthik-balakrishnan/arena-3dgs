@@ -481,7 +481,7 @@ def run_chamber_colmap(chamber_id, image_paths, workspace,
 
 
 # ═══════════════════════════════════════════════════════════════════════
-#  4. CROSS-CHAMBER ALIGNMENT (CAMERA-POSE + DESCRIPTOR FALLBACK)
+#  4. CROSS-CHAMBER ALIGNMENT (CAMERA-POSE + BRIDGE-POINT DESCRIPTORS)
 # ═══════════════════════════════════════════════════════════════════════
 
 def quat_to_rotmat(qvec):
@@ -491,6 +491,221 @@ def quat_to_rotmat(qvec):
         [2*qx*qy + 2*qw*qz, 1 - 2*qx*qx - 2*qz*qz, 2*qy*qz - 2*qw*qx],
         [2*qx*qz - 2*qw*qy, 2*qy*qz + 2*qw*qx, 1 - 2*qx*qx - 2*qy*qy],
     ])
+
+def get_bridge_point_ids(model, current_chamber_id, target_chamber_id):
+    """Find 3D point IDs observed by transition images showing target_chamber.
+
+    A transition image FROM current_chamber that SHOWS target_chamber
+    captures features in the transition/overlap region between the two.
+    These 3D points serve as bridge points for cross-chamber alignment.
+    Includes topview and angle variants for parallax-rich geometry.
+    """
+    bridge_pts = set()
+    prefix = f'Chamber{current_chamber_id}_'
+    marker = f'_Chamber{target_chamber_id}'
+    for img in model['images'].values():
+        name = img['name']
+        # Image taken FROM current_chamber, with target_chamber in view
+        if name.startswith(prefix) and marker in name:
+            for pt2d in img['points2D']:
+                pid = pt2d['point3D_id']
+                if pid > 0 and pid < 2**63:
+                    bridge_pts.add(pid)
+    return sorted(bridge_pts)
+
+
+def get_bridge_positions(model, bridge_point_ids):
+    """Get 3D positions of bridge points in model's coordinate frame."""
+    pts = []
+    valid_ids = []
+    for pid in bridge_point_ids:
+        if pid in model['points3d']:
+            pts.append(model['points3d'][pid]['xyz'])
+            valid_ids.append(pid)
+    return np.array(pts, dtype=np.float64), valid_ids
+
+
+def get_bridge_descriptors(database_path, bridge_point_ids,
+                           model_images, model_points3d):
+    """Read SIFT descriptors for bridge points from COLMAP SQLite database.
+
+    For each 3D point, averages the descriptors from all its 2D observations
+    to get a robust mean descriptor (128-dim uint8).
+    """
+    db_path = Path(database_path)
+    if not db_path.exists():
+        return {}
+
+    import sqlite3
+    conn = sqlite3.connect(str(db_path))
+    cur = conn.cursor()
+
+    descriptors = {}
+    # Build image_id → name mapping from database
+    cur.execute("SELECT image_id, name FROM images")
+    db_images = {row[0]: row[1] for row in cur.fetchall()}
+
+    for pid in bridge_point_ids:
+        if pid not in model_points3d:
+            continue
+        pt = model_points3d[pid]
+        track = pt.get('track', [])
+
+        desc_list = []
+        for te in track:
+            db_img_id = te['image_id']
+            pt2d_idx = te['point2D_idx']
+
+            # Map model image_id → database image_id via image name
+            img_name = model_images.get(db_img_id, {}).get('name', '')
+            if not img_name:
+                continue
+
+            db_id = None
+            for db_iid, db_name in db_images.items():
+                if db_name == img_name:
+                    db_id = db_iid
+                    break
+            if db_id is None:
+                continue
+
+            cur.execute(
+                "SELECT data FROM descriptors WHERE image_id=?", (db_id,)
+            )
+            row = cur.fetchone()
+            if row is None:
+                continue
+
+            blob = row[0]
+            desc_data = np.frombuffer(blob, dtype=np.uint8)
+            cur.execute(
+                "SELECT rows, cols FROM descriptors WHERE image_id=?",
+                (db_id,)
+            )
+            dims = cur.fetchone()
+            if dims is None:
+                continue
+            rows, cols = dims
+            if pt2d_idx < rows:
+                start = pt2d_idx * cols
+                desc_data = np.frombuffer(blob, dtype=np.uint8)
+                # Read cols bytes for this keypoint
+                # Each descriptor is stored as a row of cols bytes
+                start_byte = pt2d_idx * cols
+                end_byte = start_byte + cols
+                desc = desc_data[start_byte:end_byte]
+                if len(desc) == cols:
+                    desc_list.append(desc)
+
+        if desc_list:
+            descriptors[pid] = np.mean(desc_list, axis=0).astype(np.uint8)
+
+    conn.close()
+    return descriptors
+
+
+def match_bridge_points(desc_X, pos_X, desc_Y, pos_Y):
+    """Match bridge points between chambers using brute-force + Lowe's test.
+
+    Returns list of (idx_X, idx_Y).
+    """
+    if len(desc_X) == 0 or len(desc_Y) == 0:
+        return []
+
+    keys_X = np.array(list(desc_X.keys()))
+    keys_Y = np.array(list(desc_Y.keys()))
+    arr_X = np.array([desc_X[k] for k in keys_X]).astype(np.float32)
+    arr_Y = np.array([desc_Y[k] for k in keys_Y]).astype(np.float32)
+
+    import cv2
+    bf = cv2.BFMatcher(cv2.NORM_L2)
+    matches = bf.knnMatch(arr_X, arr_Y, k=2)
+
+    good = []
+    for m_pair in matches:
+        if len(m_pair) >= 2:
+            m, n = m_pair
+            if m.distance < 0.75 * n.distance:
+                good.append(m)
+        elif len(m_pair) == 1:
+            good.append(m_pair[0])
+
+    matched_pairs = []
+    for m in good:
+        idx_X = int(keys_X[m.queryIdx])
+        idx_Y = int(keys_Y[m.trainIdx])
+        matched_pairs.append((idx_X, idx_Y))
+
+    return matched_pairs
+
+
+def compute_rigid_transform_ransac(matched_pairs, pos_X, pos_Y, max_iters=2000):
+    """RANSAC on matched 3D-3D pairs to find rigid transform (R, t).
+
+    Returns (R, t), inlier_pairs, n_inliers.
+    Returns (None, [], 0) if no valid transform found.
+    """
+    if len(matched_pairs) < 4:
+        print(f"  Too few matches ({len(matched_pairs)}) for RANSAC")
+        return None, [], 0
+
+    pts_X = np.array([pos_X[i] for i, _ in matched_pairs])
+    pts_Y = np.array([pos_Y[j] for _, j in matched_pairs])
+
+    best_inliers = []
+    best_R = None
+    best_t = None
+    n_pts = len(matched_pairs)
+
+    for _ in range(max_iters):
+        idx = np.random.choice(n_pts, 3, replace=False)
+        pX = pts_X[idx]
+        pY = pts_Y[idx]
+
+        # Compute centroid
+        cX = pX.mean(axis=0)
+        cY = pY.mean(axis=0)
+
+        H = (pX - cX).T @ (pY - cY)
+        U, _, Vt = np.linalg.svd(H)
+        R = Vt.T @ U.T
+        if np.linalg.det(R) < 0:
+            Vt[-1] *= -1
+            R = Vt.T @ U.T
+        t = cX - R @ cY
+
+        # Count inliers
+        err = np.linalg.norm(pts_X - (R @ pts_Y.T).T - t, axis=1)
+        inlier_mask = err < 0.1  # 10 cm threshold
+        n_inliers = inlier_mask.sum()
+
+        if n_inliers > len(best_inliers):
+            best_inliers = inlier_mask
+            best_R = R
+            best_t = t
+
+    if best_R is None or len(best_inliers) < 4:
+        return None, [], 0
+
+    # Refine with all inliers
+    inlier_idx = np.where(best_inliers)[0]
+    inlier_pairs = [matched_pairs[i] for i in inlier_idx]
+    pX_in = pts_X[inlier_idx]
+    pY_in = pts_Y[inlier_idx]
+
+    cX = pX_in.mean(axis=0)
+    cY = pY_in.mean(axis=0)
+    H = (pX_in - cX).T @ (pY_in - cY)
+    U, _, Vt = np.linalg.svd(H)
+    R = Vt.T @ U.T
+    if np.linalg.det(R) < 0:
+        Vt[-1] *= -1
+        R = Vt.T @ U.T
+    t = cX - R @ cY
+
+    n_inliers = len(inlier_idx)
+    return (R, t), inlier_pairs, n_inliers
+
 
 def get_shared_transition_images(model_X, model_Y, chamber_X_id, chamber_Y_id):
     """Find transition images between chambers X and Y that registered in BOTH models."""
@@ -517,32 +732,29 @@ def get_shared_transition_images(model_X, model_Y, chamber_X_id, chamber_Y_id):
 
 
 def compute_chamber_transform(model_X, model_Y,
-                              chamber_X_id, chamber_Y_id):
-    """Align chamber Y → chamber X using camera poses of shared transition images.
+                              chamber_X_id, chamber_Y_id,
+                              db_path_X=None, db_path_Y=None,
+                              images_source=None):
+    """Hybrid alignment: camera-pose (shared images) + bridge-point descriptors.
 
-    If a transition image registered in both models, its camera pose in each
-    frame directly gives the relative transform:
-        R = R_X @ R_Y.T,  t = t_X - R @ t_Y
+    Aligns chamber Y → chamber X's coordinate frame using:
+    1. Camera-pose of transition images that registered in BOTH models
+    2. 3D bridge points triangulated from transition images showing the other
+       chamber (topview/parallax variants give the best geometry)
+
+    Returns ((R, t), matched_names) or (None, []) on failure.
     """
     pair = (min(chamber_X_id, chamber_Y_id), max(chamber_X_id, chamber_Y_id))
     shared, only_X, only_Y = get_shared_transition_images(
         model_X, model_Y, chamber_X_id, chamber_Y_id
     )
 
-    print(f"  Shared transition images: {len(shared)}")
-    if only_X:
-        print(f"  Only in Chamber{chamber_X_id} model: {len(only_X)}")
-    if only_Y:
-        print(f"  Only in Chamber{chamber_Y_id} model: {len(only_Y)}")
+    print(f"  Transition images shared: {len(shared)}, "
+          f"only in X: {len(only_X)}, only in Y: {len(only_Y)}")
 
-    if not shared:
-        print(f"  No shared transition images between ({pair[0]}, {pair[1]})")
-        return None, []
-
-    # Compute transform from each shared image's camera poses
-    transforms = []
+    # ── Part 1: Camera-pose alignment from shared images ──
+    camera_pose_transforms = []
     for name in shared:
-        # Find image in both models
         img_X = next(img for img in model_X['images'].values() if img['name'] == name)
         img_Y = next(img for img in model_Y['images'].values() if img['name'] == name)
 
@@ -553,22 +765,223 @@ def compute_chamber_transform(model_X, model_Y,
 
         R = R_X @ R_Y.T
         t = t_X - R @ t_Y
-        transforms.append((R, t))
+        camera_pose_transforms.append((R, t))
 
-    if len(transforms) == 1:
-        R, t = transforms[0]
-        print(f"  Camera-pose alignment: 1 shared image ({shared[0]})")
-        return (R, t), shared
+    if camera_pose_transforms:
+        Rs = np.array([T[0] for T in camera_pose_transforms])
+        ts = np.array([T[1] for T in camera_pose_transforms])
+        cam_R = np.median(Rs.reshape(len(Rs), -1), axis=0).reshape(3, 3)
+        U, _, Vt = np.linalg.svd(cam_R)
+        cam_R = U @ Vt
+        cam_t = np.median(ts, axis=0)
+        print(f"  Camera-pose alignment: {len(camera_pose_transforms)} shared images")
+    else:
+        cam_R, cam_t = None, None
 
-    # Multiple shared images: robust averaging
-    Rs = np.array([T[0] for T in transforms])
-    ts = np.array([T[1] for T in transforms])
+    # ── Part 2: Bridge-point descriptor matching ──
+    bridge_R, bridge_t = None, None
+    bridge_inliers = 0
+    bridge_X_ids, bridge_X_desc = None, None
+    bridge_Y_ids, bridge_Y_desc = None, None
+    bridge_matched_names = []
+
+    for db_path, model, only_set, cid_from, cid_to, label in [
+        (db_path_X, model_X, only_X + shared, chamber_X_id, chamber_Y_id, 'X→Y'),
+        (db_path_Y, model_Y, only_Y + shared, chamber_Y_id, chamber_X_id, 'Y→X'),
+    ]:
+        if not only_set or db_path is None:
+            continue
+        if not Path(db_path).exists():
+            print(f"  Database not found: {db_path}, skipping bridge points for {label}")
+            continue
+
+        print(f"  Extracting bridge points ({label})...")
+        b_ids = get_bridge_point_ids(model, cid_from, cid_to)
+        if len(b_ids) < 5:
+            print(f"    Too few bridge points: {len(b_ids)}")
+            continue
+
+        descs = get_bridge_descriptors(db_path, b_ids, model['images'], model['points3d'])
+        if len(descs) < 5:
+            print(f"    Too few with descriptors: {len(descs)}")
+            continue
+
+        if label == 'X→Y':
+            bridge_X_ids, bridge_X_desc = b_ids, descs
+        else:
+            bridge_Y_ids, bridge_Y_desc = b_ids, descs
+
+    # Match bridge points across chambers
+    if (bridge_X_desc is not None and bridge_Y_desc is not None
+            and len(bridge_X_desc) >= 5 and len(bridge_Y_desc) >= 5):
+        pos_X, _ = get_bridge_positions(model_X, bridge_X_ids)
+        pos_Y, _ = get_bridge_positions(model_Y, bridge_Y_ids)
+
+        # Build position lookup by point ID
+        pos_X_dict = {bridge_X_ids[i]: pos_X[i] for i in range(len(bridge_X_ids))}
+        pos_Y_dict = {bridge_Y_ids[i]: pos_Y[i] for i in range(len(bridge_Y_ids))}
+
+        matched_pairs = match_bridge_points(
+            bridge_X_desc, pos_X_dict,
+            bridge_Y_desc, pos_Y_dict
+        )
+        print(f"  Descriptor matches: {len(matched_pairs)}")
+
+        if len(matched_pairs) >= 4:
+            result = compute_rigid_transform_ransac(matched_pairs, pos_X_dict, pos_Y_dict)
+            if result[0] is not None:
+                (bridge_R, bridge_t), inlier_pairs, bridge_inliers = result
+                print(f"  Bridge-point RANSAC: {bridge_inliers} inliers")
+                # Extract names of matched images for reporting
+                bridge_matched_names = []
+                for pid_X, pid_Y in inlier_pairs:
+                    # Find which images observe these points
+                    for img in model_X['images'].values():
+                        for pt2d in img['points2D']:
+                            if pt2d['point3D_id'] == pid_X:
+                                bridge_matched_names.append(img['name'])
+                                break
+                        else:
+                            continue
+                        break
+                bridge_matched_names = sorted(set(bridge_matched_names))
+            else:
+                print(f"  Bridge-point RANSAC: failed")
+                bridge_matched_names = []
+        else:
+            bridge_matched_names = []
+    else:
+        bridge_matched_names = []
+
+    # ── Part 3: Combine both estimates ──
+    all_transforms = []
+    all_names = []
+
+    if cam_R is not None:
+        all_transforms.append((cam_R, cam_t))
+        all_names.extend(shared)
+
+    if bridge_R is not None:
+        all_transforms.append((bridge_R, bridge_t))
+        all_names.extend(bridge_matched_names)
+
+    if not all_transforms:
+        # Fall back: try using only unshared transition images via PnP
+        print("  No transforms from either method. Trying SIFT+PnP on unshared images...")
+        if images_source is not None and (only_X or only_Y):
+            result = _align_via_pnp(
+                model_X, model_Y, only_X, only_Y,
+                chamber_X_id, chamber_Y_id, images_source
+            )
+            if result[0] is not None:
+                all_transforms.append(result[0])
+                all_names.extend(result[1])
+
+    if not all_transforms:
+        print(f"  ❌ No transform found between chambers {pair}")
+        return None, []
+
+    # Robust combination via median
+    Rs = np.array([T[0] for T in all_transforms])
+    ts = np.array([T[1] for T in all_transforms])
     mean_R = np.median(Rs.reshape(len(Rs), -1), axis=0).reshape(3, 3)
     U, _, Vt = np.linalg.svd(mean_R)
-    R_med = U @ Vt
-    t_med = np.median(ts, axis=0)
-    print(f"  Camera-pose alignment: {len(shared)} shared images (median)")
-    return (R_med, t_med), shared
+    R_final = U @ Vt
+    t_final = np.median(ts, axis=0)
+
+    print(f"  ✅ Final: camera-pose={len(camera_pose_transforms)}, "
+          f"bridge={bridge_inliers}, total={len(all_transforms)} estimates")
+    return (R_final, t_final), list(set(all_names))
+
+
+def _align_via_pnp(model_X, model_Y, only_X, only_Y,
+                   chamber_X_id, chamber_Y_id, images_source):
+    """Fallback: use SIFT feature matching + PnP on unshared transition images."""
+    import cv2
+    sift = cv2.SIFT_create()
+    bf = cv2.BFMatcher(cv2.NORM_L2, crossCheck=True)
+    transforms = []
+
+    for name in only_X:
+        img_path = Path(images_source) / name
+        if not img_path.exists():
+            continue
+        img = cv2.imread(str(img_path))
+        if img is None:
+            continue
+        kp, desc = sift.detectAndCompute(img, None)
+        if desc is None or len(kp) < 10:
+            continue
+
+        # Try to match against Y's registered images that have 3D points
+        pts_2d = []
+        pts_3d = []
+        for img_data in model_Y['images'].values():
+            y_name = img_data['name']
+            y_path = Path(images_source) / y_name
+            if not y_path.exists():
+                continue
+            # Check if this Y-image has 3D points
+            y_pts3d = [p for p in img_data['points2D']
+                       if p['point3D_id'] > 0 and p['point3D_id'] < 2**63]
+            if len(y_pts3d) < 10:
+                continue
+
+            img_y = cv2.imread(str(y_path))
+            if img_y is None:
+                continue
+            kp_y, desc_y = sift.detectAndCompute(img_y, None)
+            if desc_y is None or len(kp_y) < 10:
+                continue
+
+            matches = bf.match(desc, desc_y)
+            for m in matches:
+                pt_idx = m.trainIdx
+                if pt_idx < len(img_data['points2D']):
+                    pt_info = img_data['points2D'][pt_idx]
+                    if pt_info['point3D_id'] > 0 and pt_info['point3D_id'] < 2**63:
+                        pts_2d.append(kp[m.queryIdx].pt)
+                        pts_3d.append(
+                            model_Y['points3d'][pt_info['point3D_id']]['xyz']
+                        )
+
+        if len(pts_2d) >= 8:
+            pts_2d = np.array(pts_2d, dtype=np.float32)
+            pts_3d = np.array(pts_3d, dtype=np.float32)
+            # Get camera intrinsics from X's model
+            cam = list(model_X['cameras'].values())[0]
+            fx = cam['params'][0]
+            cx = cam['params'][1]
+            cy = cam['params'][2]
+            K = np.array([[fx, 0, cx], [0, fx, cy], [0, 0, 1]], dtype=np.float64)
+            _, rvec, tvec, _ = cv2.solvePnPRansac(
+                pts_3d, pts_2d, K, None, iterationsCount=2000,
+                reprojectionError=8.0, confidence=0.99
+            )
+            if rvec is not None:
+                R_Y, _ = cv2.Rodrigues(rvec)
+                # This is the camera pose of the X-image in Y's frame
+                # Now get its pose in X's frame
+                img_X = next((img for img in model_X['images'].values()
+                              if img['name'] == name), None)
+                if img_X is not None:
+                    R_X = quat_to_rotmat(img_X['qvec'])
+                    t_X = img_X['tvec']
+                    # R_Y→X = R_X @ R_Y.T, t = t_X - R_Y→X @ tvec
+                    R = R_X @ R_Y.T
+                    t = t_X - R @ tvec.flatten()
+                    transforms.append((R, t))
+
+    if not transforms:
+        return (None, [])
+
+    Rs = np.array([T[0] for T in transforms])
+    ts = np.array([T[1] for T in transforms])
+    R = np.median(Rs.reshape(len(Rs), -1), axis=0).reshape(3, 3)
+    U, _, Vt = np.linalg.svd(R)
+    R = U @ Vt
+    t = np.median(ts, axis=0)
+    return (R, t), []
 
 
 def format_transform(R, t):
