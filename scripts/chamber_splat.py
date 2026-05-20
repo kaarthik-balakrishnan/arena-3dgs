@@ -434,7 +434,8 @@ def run_colmap_feature_extraction(database_path, image_path, options=None):
         f"--ImageReader.single_camera 1 "
         f"--SiftExtraction.max_num_features {opts.get('max_features', 32768)} "
         f"--SiftExtraction.first_octave -1 "
-        f"--SiftExtraction.peak_threshold {opts.get('peak_threshold', 0.02)}"
+        f"--SiftExtraction.peak_threshold {opts.get('peak_threshold', 0.02)} "
+        f"--SiftExtraction.use_gpu 0"
     )
     print(f"  Running: colmap feature_extractor ...")
     ret = os.system(cmd)
