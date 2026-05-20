@@ -311,19 +311,23 @@ def train(args):
 
         scales_act = torch.exp(scales)
 
+        # Reshape (N, 48) → (N, 16, 3) for SH degree 3 evaluation
+        colors_sh_3d = colors_sh.view(-1, 16, 3)
         renders, alphas, info = gs_rasterization(
             means=means,
             quats=quats / (quats.norm(dim=-1, keepdim=True) + 1e-10),
             scales=scales_act,
             opacities=torch.sigmoid(opacities),
-            colors=colors_sh,
+            colors=colors_sh_3d,
             viewmats=viewmats,
             Ks=Ks,
             width=img_w,
             height=img_h,
-            backgrounds=None,  # defaults to black; avoids gsplat 1.5.3+ packed-mode assertion bug
+            backgrounds=None,
+            sh_degree=3,
         )
 
+        renders = renders.permute(0, 3, 1, 2)  # (C, H, W, 3) → (C, 3, H, W)
         loss = F.mse_loss(renders, imgs_gt)
 
         # L1 loss (helps with sharpness)
