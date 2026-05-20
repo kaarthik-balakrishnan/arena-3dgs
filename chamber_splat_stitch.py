@@ -123,12 +123,13 @@ try:
 except (FileNotFoundError, subprocess.CalledProcessError):
     pass
 
-if not colmap_available and DRIVE_MOUNT.exists():
-    print("Installing COLMAP...")
-    !wget -q https://github.com/colmap/colmap/releases/download/3.8/colmap-3.8-linux-no-cuda.tar.gz
-    !tar -xzf colmap-3.8-linux-no-cuda.tar.gz -C /usr/local/
-    !rm colmap-3.8-linux-no-cuda.tar.gz
-    !colmap help | head -5
+if not colmap_available and ON_COLAB:
+    print("Installing COLMAP via apt-get...")
+    subprocess.run(['apt-get', 'update', '-qq'], check=True)
+    subprocess.run(['apt-get', 'install', '-y', '-qq', 'colmap'], check=True)
+    # Verify
+    result = subprocess.run(['colmap', 'help'], capture_output=True, text=True)
+    print(result.stdout[:200])
     colmap_available = True
 
 if not colmap_available:
