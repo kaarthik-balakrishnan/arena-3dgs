@@ -99,9 +99,9 @@ def qvec2rotmat(qvec):
 # ── Adaptive density control ───────────────────────────────────────
 @torch.no_grad()
 def densification(means, scales, opacities, grad_accum, count_accum,
-                  densify_grad_threshold=0.00002, densify_size_threshold=0.0001,
-                  opacity_reset_interval=3000, prune_opacity_threshold=0.005,
-                  iteration=0, max_gaussians=500000):
+                  densify_grad_threshold=0.0002, prune_opacity_threshold=0.005,
+                  opacity_reset_interval=15000, iteration=0, max_gaussians=500000,
+                  scene_extent=1.0):
     if iteration < 500:
         return means, scales, opacities, grad_accum, count_accum
 
@@ -111,9 +111,10 @@ def densification(means, scales, opacities, grad_accum, count_accum,
 
     grad_avg = grad_accum / count_accum.clamp(min=1)
     grad_norm = grad_avg.norm(dim=-1)
+    size_threshold = 0.01 * scene_extent
 
-    clone_mask = (grad_norm >= densify_grad_threshold) & (scales.mean(dim=-1) <= densify_size_threshold)
-    split_mask = (grad_norm >= densify_grad_threshold) & (scales.mean(dim=-1) > densify_size_threshold)
+    clone_mask = (grad_norm >= densify_grad_threshold) & (scales.mean(dim=-1) <= size_threshold)
+    split_mask = (grad_norm >= densify_grad_threshold) & (scales.mean(dim=-1) > size_threshold)
 
     n_clone = clone_mask.sum().item()
     n_split = split_mask.sum().item()
@@ -333,6 +334,7 @@ def train(args):
         {'params': [colors_sh], 'lr': 0.0025, 'name': 'features'},
     ]
     optimizer = torch.optim.Adam(params)
+    scene_extent = means.data.norm(dim=-1).max().item()
 
     def get_xyz_lr(iteration, lr_init=0.00016, lr_final=0.0000016, max_steps=30000):
         t = min(iteration, max_steps) / max_steps
@@ -390,9 +392,9 @@ def train(args):
         # Accumulate gradients for densification (only visible Gaussians)
         if means.grad is not None:
             with torch.no_grad():
-                grad_sq = means.grad.detach() ** 2
-                grad_accum += grad_sq
-                visible = (grad_sq.sum(dim=-1) > 0).float().unsqueeze(-1)
+                grad_abs = means.grad.detach().abs()
+                grad_accum += grad_abs
+                visible = (grad_abs.sum(dim=-1) > 0).float().unsqueeze(-1)
                 count_accum += visible
 
         # Update position learning rate before step
@@ -408,7 +410,8 @@ def train(args):
                 new_means, new_scales, new_opacities, grad_accum, count_accum = \
                     densification(means.data, scales_act.data, opacities.data,
                                   grad_accum, count_accum, iteration=it,
-                                  max_gaussians=args.max_gaussians)
+                                  max_gaussians=args.max_gaussians,
+                                  scene_extent=scene_extent)
                 
                 n_new = len(new_means)
                 n_old = len(means)
