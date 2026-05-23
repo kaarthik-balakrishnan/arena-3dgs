@@ -26,6 +26,59 @@ OUTPUT = BASE / "output"
 SIMPLE_PLY = OUTPUT / "arena_sparse_pointcloud.ply"
 TRAINING_DIR = OUTPUT / "arena_3dgs_input"
 
+DISTANCE_THRESHOLD = 10.0
+
+
+def quaternion_to_rotation_matrix(qw, qx, qy, qz):
+    """Convert quaternion (w, x, y, z) to 3x3 rotation matrix."""
+    return np.array([
+        [1 - 2*(qy**2 + qz**2), 2*(qx*qy - qw*qz), 2*(qx*qz + qw*qy)],
+        [2*(qx*qy + qw*qz), 1 - 2*(qx**2 + qz**2), 2*(qy*qz - qw*qx)],
+        [2*(qx*qz - qw*qy), 2*(qy*qz + qw*qx), 1 - 2*(qx**2 + qy**2)],
+    ])
+
+
+def read_images_txt(path):
+    """Read images.txt and return dict of image_id → metadata including camera center."""
+    images = {}
+    with open(path) as f:
+        lines = [l.rstrip("\n") for l in f if not l.startswith("#")]
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        parts = line.split()
+        if len(parts) < 10:
+            i += 1
+            continue
+        image_id = int(parts[0])
+        qw, qx, qy, qz = map(float, parts[1:5])
+        tx, ty, tz = map(float, parts[5:8])
+        camera_id = int(parts[8])
+        name = parts[9]
+
+        R = quaternion_to_rotation_matrix(qw, qx, qy, qz)
+        center = -R.T @ np.array([tx, ty, tz])
+        center_dist = float(np.linalg.norm(center))
+
+        i += 1
+        points2d_line = lines[i] if i < len(lines) else ""
+        i += 1
+
+        images[image_id] = {
+            "qw": qw, "qx": qx, "qy": qy, "qz": qz,
+            "tx": tx, "ty": ty, "tz": tz,
+            "camera_id": camera_id,
+            "name": name,
+            "center": center,
+            "center_dist": center_dist,
+            "line1": line,
+            "line2": points2d_line,
+        }
+    return images
+
 
 def read_points_txt(path):
     points, colors = [], []
@@ -40,6 +93,24 @@ def read_points_txt(path):
                 points.append([x, y, z])
                 colors.append([r, g, b])
     return np.array(points), np.array(colors)
+
+
+def read_points3d_lines(path):
+    """Read points3D.txt preserving full lines for filtered rewriting."""
+    lines = []
+    points, colors = [], []
+    with open(path) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.strip().split()
+            if len(parts) >= 7:
+                x, y, z = float(parts[1]), float(parts[2]), float(parts[3])
+                r, g, b = int(parts[4]), int(parts[5]), int(parts[6])
+                points.append([x, y, z])
+                colors.append([r, g, b])
+                lines.append(line.rstrip("\n"))
+    return lines, np.array(points), np.array(colors)
 
 
 def read_cameras_txt(path):
@@ -133,12 +204,14 @@ def convert_binary(txt_dir, bin_dir):
     return True
 
 
-def organize_images(src_dir, dst_dir):
+def organize_images(src_dir, dst_dir, valid_names=None):
     """Copy images to training input directory."""
     dst_dir.mkdir(parents=True, exist_ok=True)
     count = 0
     for ext in ["*.jpg", "*.jpeg", "*.png"]:
         for f in sorted(src_dir.glob(ext)):
+            if valid_names is not None and f.name not in valid_names:
+                continue
             dst = dst_dir / f.name
             if not dst.exists():
                 shutil.copy2(str(f), str(dst))
@@ -156,9 +229,39 @@ def main():
 
     # ── Read COLMAP model ──────────────────────────────────────
     print(f"\n[1] Reading COLMAP model from {MODEL_TXT}...")
-    points, colors = read_points_txt(MODEL_TXT / "points3D.txt")
+
+    # Read images.txt and compute camera centers
+    images_data = read_images_txt(MODEL_TXT / "images.txt")
+    print(f"  {len(images_data)} image(s) read")
+
+    # Filter images by camera center distance from origin
+    valid_image_ids = set()
+    valid_camera_ids = set()
+    for img_id, img in images_data.items():
+        if img["center_dist"] <= DISTANCE_THRESHOLD:
+            valid_image_ids.add(img_id)
+            valid_camera_ids.add(img["camera_id"])
+    n_filtered_images = len(images_data) - len(valid_image_ids)
+    if n_filtered_images:
+        print(f"  Filtered out {n_filtered_images} image(s) with center distance > {DISTANCE_THRESHOLD}")
+
+    # Read and filter cameras (only those referenced by valid images)
     cameras = read_cameras_txt(MODEL_TXT / "cameras.txt")
-    print(f"  {len(points)} points, {len(cameras)} camera(s)")
+    cameras = {cid: c for cid, c in cameras.items() if cid in valid_camera_ids}
+    print(f"  {len(cameras)} camera(s) (after filtering)")
+
+    # Read and filter 3D points by distance from origin
+    points_lines, points, colors = read_points3d_lines(MODEL_TXT / "points3D.txt")
+    dists = np.linalg.norm(points, axis=1)
+    keep_mask = dists <= DISTANCE_THRESHOLD
+    points = points[keep_mask]
+    colors = colors[keep_mask]
+    points_lines = [line for i, line in enumerate(points_lines) if keep_mask[i]]
+    n_filtered_points = len(keep_mask) - keep_mask.sum()
+    if n_filtered_points:
+        print(f"  Filtered out {n_filtered_points} point(s) with distance > {DISTANCE_THRESHOLD}")
+
+    print(f"  {len(points)} point(s), {len(cameras)} camera(s)")
 
     # ── Simple reference PLY ────────────────────────────────────
     print(f"\n[2] Writing reference PLY...")
@@ -172,14 +275,42 @@ def main():
     sparse_dir = TRAINING_DIR / "sparse" / "0"
     sparse_dir.mkdir(parents=True)
 
-    # Copy images.txt, points3D.txt as-is
-    for fn in ["images.txt", "points3D.txt"]:
-        shutil.copy2(str(MODEL_TXT / fn), str(sparse_dir / fn))
-        print(f"  Copied {fn}")
+    # Write filtered images.txt (only valid images)
+    with open(sparse_dir / "images.txt", "w") as f:
+        f.write("# Image list with two lines of data per image:\n")
+        f.write("#   IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n")
+        f.write("#   POINTS2D[] as (X, Y, POINT3D_ID)\n")
+        f.write(f"# Number of images: {len(valid_image_ids)}, mean observations per image: 0\n")
+        for img_id in sorted(images_data):
+            if img_id in valid_image_ids:
+                img = images_data[img_id]
+                f.write(img["line1"] + "\n")
+                f.write(img["line2"] + "\n")
+    print(f"  images.txt ({len(valid_image_ids)} images, filtered)")
+
+    # Write filtered points3D.txt with cleaned tracks
+    with open(sparse_dir / "points3D.txt", "w") as f:
+        f.write("# 3D point list with one line of data per point:\n")
+        f.write("#   POINT3D_ID, X, Y, Z, R, G, B, ERROR, TRACK[] as (IMAGE_ID, POINT2D_IDX)\n")
+        f.write(f"# Number of points: {len(points_lines)}\n")
+        for line in points_lines:
+            parts = line.split()
+            if len(parts) >= 9:
+                tracks = parts[8:]
+                cleaned = []
+                for j in range(0, len(tracks), 2):
+                    if j + 1 < len(tracks):
+                        img_id = int(tracks[j])
+                        if img_id in valid_image_ids:
+                            cleaned.append(tracks[j])
+                            cleaned.append(tracks[j + 1])
+                line = " ".join(parts[:8] + cleaned)
+            f.write(line + "\n")
+    print(f"  points3D.txt ({len(points_lines)} points, filtered)")
 
     # Write PINHOLE cameras.txt
     write_cameras_pinhole(sparse_dir / "cameras.txt", cameras)
-    print(f"  cameras.txt (converted to PINHOLE)")
+    print(f"  cameras.txt (converted to PINHOLE, {len(cameras)} cameras)")
 
     # Write 3DGS-format PLY
     write_ply_3dgs(sparse_dir / "points3D.ply", points, colors)
@@ -198,18 +329,14 @@ def main():
     else:
         print(f"  Binary files not available (model_converter may need output dir to exist)")
 
-    # Organize images
-    organize_images(IMAGES_SRC, TRAINING_DIR / "images")
+    # Organize images — only copy images referenced by valid cameras
+    valid_names = {img["name"] for img_id, img in images_data.items() if img_id in valid_image_ids}
+    organize_images(IMAGES_SRC, TRAINING_DIR / "images", valid_names)
 
     # ── Summary ─────────────────────────────────────────────────
     print(f"\n{'=' * 60}")
-    n_imgs = 0
-    img_txt = sparse_dir / "images.txt"
-    if img_txt.exists():
-        with open(img_txt) as f:
-            n_imgs = sum(1 for l in f if l.strip() and not l.startswith("#")) // 2
     print(f"  Training input ready at: {TRAINING_DIR}")
-    print(f"    {n_imgs} images")
+    print(f"    {len(valid_image_ids)} images")
     print(f"    {len(points)} points")
     print(f"    {len(cameras)} camera(s) (PINHOLE)")
     print(f"    points3D.ply (3DGS format)")
