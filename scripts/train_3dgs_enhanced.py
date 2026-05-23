@@ -343,7 +343,7 @@ def train(args):
     n_iterations = args.iterations
     densify_interval = 100
 
-    # Gradient tracking for densification
+    # Gradient tracking for densification (tracks per-Gaussian visibility)
     grad_accum = torch.zeros(n_points, 3, device=device)
     count_accum = torch.zeros(n_points, 1, device=device)
 
@@ -387,11 +387,13 @@ def train(args):
 
         loss.backward()
 
-        # Accumulate gradients for densification (every iteration)
+        # Accumulate gradients for densification (only visible Gaussians)
         if means.grad is not None:
             with torch.no_grad():
-                grad_accum += means.grad.detach() ** 2
-                count_accum += 1
+                grad_sq = means.grad.detach() ** 2
+                grad_accum += grad_sq
+                visible = (grad_sq.sum(dim=-1) > 0).float().unsqueeze(-1)
+                count_accum += visible
 
         # Update position learning rate before step
         for param_group in optimizer.param_groups:
