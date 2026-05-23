@@ -99,7 +99,7 @@ def qvec2rotmat(qvec):
 # ── Adaptive density control ───────────────────────────────────────
 @torch.no_grad()
 def densification(means, scales, opacities, grad_accum, count_accum,
-                  densify_grad_threshold=0.0002, densify_size_threshold=0.01,
+                  densify_grad_threshold=0.00002, densify_size_threshold=0.0001,
                   opacity_reset_interval=3000, prune_opacity_threshold=0.005,
                   iteration=0, max_gaussians=500000):
     if iteration < 500:
@@ -318,7 +318,7 @@ def train(args):
 
     means = torch.nn.Parameter(means)
     quats = torch.nn.Parameter(quats)
-    scales = torch.nn.Parameter(torch.log(scales))
+    scales = torch.nn.Parameter(scales)
     opacities = torch.nn.Parameter(torch.log(opacities / (1 - opacities + 1e-10)))
     n_sh_rest = 45  # total 48 SH coeffs = 3 DC + 45 rest (degree 3)
     C0 = 0.28209479177387814
@@ -356,6 +356,12 @@ def train(args):
     for it in pbar:
         optimizer.zero_grad()
 
+        # Pick one random view per iteration (matching original 3DGS)
+        idx = torch.randint(0, n_views, (1,)).item()
+        viewmat = viewmats[idx:idx+1]
+        K_single = Ks[idx:idx+1]
+        gt = imgs_gt[idx:idx+1]
+
         scales_act = torch.exp(scales)
 
         # Reshape (N, 48) → (N, 16, 3) for SH degree 3 evaluation
@@ -366,17 +372,17 @@ def train(args):
             scales=scales_act,
             opacities=torch.sigmoid(opacities),
             colors=colors_sh_3d,
-            viewmats=viewmats,
-            Ks=Ks,
+            viewmats=viewmat,
+            Ks=K_single,
             width=img_w,
             height=img_h,
             backgrounds=None,
             sh_degree=3,
         )
 
-        renders = renders.permute(0, 3, 1, 2)  # (B, H, W, 3) → (B, 3, H, W)
-        L1 = F.l1_loss(renders, imgs_gt)
-        ssim_val = ssim(renders, imgs_gt)
+        renders = renders.permute(0, 3, 1, 2)  # (1, H, W, 3) → (1, 3, H, W)
+        L1 = F.l1_loss(renders, gt)
+        ssim_val = ssim(renders, gt)
         loss = (1.0 - 0.2) * L1 + 0.2 * (1.0 - ssim_val)
 
         loss.backward()
