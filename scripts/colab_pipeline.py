@@ -379,7 +379,26 @@ def _copy_sparse_to_input(best_model):
                 shutil.copy2(txt_src, os.path.join(SPARSE_DIR, fname))
 
 
-def download_precomputed_colmap(session):
+COLMAP_MODELS = {
+    "30-image original": {
+        "dir": "colmap_data",
+        "expected_imgs": 30,
+        "desc": "Original COLMAP model (30 registered images)",
+    },
+    "34-image merged": {
+        "dir": "colmap_data_optimized",
+        "expected_imgs": 34,
+        "desc": "Merged/optimized COLMAP model (34 registered images)",
+    },
+    "84-image full": {
+        "dir": "colmap_data_84",
+        "expected_imgs": 84,
+        "desc": "Full arena model with 84 registered images (recommended)",
+    },
+}
+
+
+def download_precomputed_colmap(session, model_choice=None):
     import requests
 
     if session.is_step_done("colmap_downloaded"):
@@ -394,30 +413,15 @@ def download_precomputed_colmap(session):
         session.mark_step("colmap_downloaded")
         return
 
-    print("\nWhich COLMAP model to download?")
-    print("  [1] 34-image merged model (RECOMMENDED)")
-    print("  [2] 30-image original model")
-    choice = input("Enter 1 or 2 (default: 1): ").strip() or "1"
+    if model_choice is None or model_choice not in COLMAP_MODELS:
+        model_choice = "84-image full"
 
-    if choice == "2":
-        files_to_download = [
-            "colmap_data/cameras.txt",
-            "colmap_data/images.txt",
-            "colmap_data/points3D.txt",
-        ]
-        expected_imgs = 30
-    else:
-        files_to_download = [
-            "colmap_data_optimized/cameras.txt",
-            "colmap_data_optimized/images.txt",
-            "colmap_data_optimized/points3D.txt",
-        ]
-        expected_imgs = 34
+    model_info = COLMAP_MODELS[model_choice]
 
     local_names = ["cameras.txt", "images.txt", "points3D.txt"]
-    for remote, local in zip(files_to_download, local_names):
-        url = f"{REPO_URL}/{remote}"
-        print(f"Downloading {local}...")
+    for local in local_names:
+        url = f"{REPO_URL}/{model_info['dir']}/{local}"
+        print(f"Downloading {local} from {model_info['dir']}...")
         r = requests.get(url)
         if r.status_code == 200:
             with open(os.path.join(SPARSE_DIR, local), "w") as f:
@@ -425,8 +429,8 @@ def download_precomputed_colmap(session):
         else:
             print(f"  FAILED (status {r.status_code})")
 
-    session.set_param("colmap_download_choice", choice)
-    session.set_param("expected_images", expected_imgs)
+    session.set_param("colmap_download_choice", model_choice)
+    session.set_param("expected_images", model_info["expected_imgs"])
 
     with open(os.path.join(SPARSE_DIR, "images.txt")) as f:
         img_lines = [l for l in f if l.strip() and not l.startswith("#")]
