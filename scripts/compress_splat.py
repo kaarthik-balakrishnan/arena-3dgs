@@ -728,6 +728,64 @@ def compress(ply_path, quality='medium', output_dir=None):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  Standard .splat Export (32-byte per Gaussian, SuperSplat-compatible)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def export_standard_splat(ply_path, output_path=None):
+    """Export PLY to standard 32-byte-per-splat format for SuperSplat.
+
+    Format (per Gaussian):
+      float32[3] position    — 12 bytes
+      uint8[4]   quaternion  —  4 bytes (packed from [-1,1] to [0,255])
+      uint8[3]   scale       —  3 bytes (packed from log-space)
+      uint8      opacity     —  1 byte  (sigmoid, packed from [0,1] to [0,255])
+      float32[3] f_dc        — 12 bytes (SH DC term)
+                             — 32 bytes total
+    """
+    ply_path = Path(ply_path)
+    if output_path is None:
+        output_path = ply_path.with_name(ply_path.stem + "_standard.splat")
+    output_path = Path(output_path)
+
+    # Read PLY
+    plydata = PlyData.read(str(ply_path))
+    vertex = plydata["vertex"]
+    N = len(vertex)
+
+    pos = np.column_stack([vertex["x"], vertex["y"], vertex["z"]]).astype(np.float32)
+    rots = np.column_stack([vertex["rot_0"], vertex["rot_1"], vertex["rot_2"], vertex["rot_3"]]).astype(np.float32)
+    scales = np.column_stack([vertex["scale_0"], vertex["scale_1"], vertex["scale_2"]]).astype(np.float32)
+    opacities = vertex["opacity"].astype(np.float32)
+    dc = np.column_stack([vertex["f_dc_0"], vertex["f_dc_1"], vertex["f_dc_2"]]).astype(np.float32)
+
+    # Pack quaternion: normalize then map [-1,1] → [0,255]
+    norms = np.sqrt(np.sum(rots ** 2, axis=1, keepdims=True))
+    rots_norm = rots / (norms + 1e-10)
+    rots_packed = np.clip(np.round((rots_norm + 1.0) * 127.5), 0, 255).astype(np.uint8)
+
+    # Pack scale: map from log-space
+    scales_packed = np.clip(np.round(scales * 16.0 + 128.0), 0, 255).astype(np.uint8)
+
+    # Pack opacity: sigmoid then map [0,1] → [0,255]
+    opacity_sigmoid = 1.0 / (1.0 + np.exp(-opacities))
+    opacity_packed = np.clip(np.round(opacity_sigmoid * 255.0), 0, 255).astype(np.uint8)
+
+    with open(output_path, "wb") as f:
+        for i in range(N):
+            f.write(pos[i].tobytes())        # 12 bytes
+            f.write(rots_packed[i].tobytes()) # 4 bytes
+            f.write(scales_packed[i].tobytes())# 3 bytes
+            f.write(opacity_packed[i])        # 1 byte
+            f.write(dc[i].tobytes())          # 12 bytes
+        # total: 32 bytes per Gaussian
+
+    size_mb = output_path.stat().st_size / (1024 * 1024)
+    print(f"Standard .splat: {output_path} ({size_mb:.1f} MB, {N:,} gaussians, {32 * N:,} bytes)")
+    print(f"  Valid for SuperSplat, PlayCanvas, and other standard .splat viewers.")
+    return str(output_path)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  CLI
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -740,6 +798,7 @@ def main():
 Examples:
   python scripts/compress_splat.py output/arena_3dgs.ply --quality medium
   python scripts/compress_splat.py output/arena_3dgs.ply --quality low
+  python scripts/compress_splat.py output/arena_3dgs.ply --standard
   python scripts/compress_splat.py --list-qualities
         """
     )
@@ -749,6 +808,8 @@ Examples:
                         help="Compression quality preset")
     parser.add_argument("--output-dir", "-o", default=None,
                         help="Output directory (default: same as input)")
+    parser.add_argument("--standard", "-s", action="store_true",
+                        help="Export in standard 32-byte-per-splat format (compatible with SuperSplat, PlayCanvas)")
     parser.add_argument("--list-qualities", action="store_true",
                         help="List available quality presets")
 
@@ -771,6 +832,14 @@ Examples:
             return 1
         args.ply = str(candidates[-1])
         print(f"Using: {args.ply}")
+
+    if args.standard:
+        out_path = None
+        if args.output_dir:
+            ply_name = Path(args.ply).stem + "_standard.splat"
+            out_path = str(Path(args.output_dir) / ply_name)
+        result = export_standard_splat(args.ply, output_path=out_path)
+        return 0 if result is not None else 1
 
     result = compress(args.ply, quality=args.quality, output_dir=args.output_dir)
     return 0 if result is not None else 1
