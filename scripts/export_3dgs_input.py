@@ -11,22 +11,40 @@ Convert COLMAP sparse model (global mapper output, 91 images) to:
          points3D.ply     → 3DGS format: x,y,z,nx,ny,nz,f_dc_0/1/2
 
 Usage:
-  python3 scripts/export_3dgs_input.py
+  python3 scripts/export_3dgs_input.py \\
+      --model-txt colmap_workspace/sparse_global/0/txt \\
+      --images-src splat-files-processed \\
+      --output output/arena_3dgs_input
+
+All arguments optional — defaults match the repo layout.
 """
 
-import shutil, subprocess, struct
+import shutil, subprocess, struct, argparse
 from pathlib import Path
 import numpy as np
 from plyfile import PlyData, PlyElement
 
 BASE = Path(__file__).resolve().parent.parent
-MODEL_TXT = BASE / "colmap_workspace" / "sparse_global" / "0" / "txt"
-IMAGES_SRC = BASE / "splat-files-processed"
-OUTPUT = BASE / "output"
+
+def parse_args():
+    p = argparse.ArgumentParser(description="Convert COLMAP model to 3DGS training input")
+    p.add_argument("--model-txt", default=str(BASE / "colmap_workspace" / "sparse_global" / "0" / "txt"),
+                   help="Path to COLMAP text model (cameras.txt, images.txt, points3D.txt)")
+    p.add_argument("--images-src", default=str(BASE / "splat-files-processed"),
+                   help="Directory containing source images")
+    p.add_argument("--output-dir", default=str(BASE / "output"),
+                   help="Output directory for training input and PLY")
+    p.add_argument("--distance-threshold", type=float, default=10.0,
+                   help="Max camera center distance from origin to include (filter outliers)")
+    return p.parse_args()
+
+args = parse_args()
+MODEL_TXT = Path(args.model_txt)
+IMAGES_SRC = Path(args.images_src)
+OUTPUT = Path(args.output_dir)
 SIMPLE_PLY = OUTPUT / "arena_sparse_pointcloud.ply"
 TRAINING_DIR = OUTPUT / "arena_3dgs_input"
-
-DISTANCE_THRESHOLD = 10.0
+DISTANCE_THRESHOLD = args.distance_threshold
 
 
 def quaternion_to_rotation_matrix(qw, qx, qy, qz):

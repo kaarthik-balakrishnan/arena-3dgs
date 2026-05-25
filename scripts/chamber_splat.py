@@ -1333,8 +1333,10 @@ def load_checkpoint(state_path):
 
 
 if __name__ == '__main__':
-    # Quick test: analyze the dataset
-    by_chamber, transitions, all_parsed = categorize_images(
-        BASE / 'splat-files-processed'
-    )
+    import argparse
+    p = argparse.ArgumentParser(description="Chamber splat stitching utilities")
+    p.add_argument("--images-dir", default=str(BASE / "splat-files-processed"),
+                   help="Directory containing chamber images")
+    a = p.parse_args()
+    by_chamber, transitions, all_parsed = categorize_images(Path(a.images_dir))
     print_dataset_summary(by_chamber, transitions)
