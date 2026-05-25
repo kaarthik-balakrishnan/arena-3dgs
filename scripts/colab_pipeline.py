@@ -90,66 +90,34 @@ def install_dependencies(
     print("\nAll dependencies ready!")
 
 
-def download_images(
+def load_images(
     session,
+    source_path,
     *,
     input_dir="/content/gaussian-splatting/input",
-    repo="kaarthik-balakrishnan/arena-3dgs",
-    expected_images=91,
-    source_type="github",
-    custom_url=None,
+    min_images=1,
 ):
-    import requests
-
-    if session.is_step_done("images_downloaded"):
-        print("Images already downloaded. Verifying files are present...")
-
-    os.makedirs(input_dir, exist_ok=True)
-    existing = [f for f in os.listdir(input_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
-    if len(existing) >= expected_images:
-        print(f"{len(existing)} images already present.")
-        session.set_param("num_images", len(existing))
-        session.mark_step("images_downloaded")
+    """Copy images from source_path on Drive into the training input directory."""
+    if session.is_step_done("images_loaded"):
+        print("Images already loaded. Skipping.")
         return
 
-    if source_type == "github":
-        api_url = f"https://api.github.com/repos/{repo}/contents/splat-files-processed"
-        resp = requests.get(api_url)
-        if resp.status_code == 200:
-            for item in resp.json():
-                if item["name"].lower().endswith((".jpg", ".jpeg", ".png")):
-                    img_resp = requests.get(item["download_url"])
-                    with open(os.path.join(input_dir, item["name"]), "wb") as f:
-                        f.write(img_resp.content)
-            imgs = [f for f in os.listdir(input_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
-            print(f"Downloaded {len(imgs)} images from GitHub")
-        else:
-            print(f"GitHub API error ({resp.status_code}). Try a different source.")
-    elif source_type == "custom_url":
-        if not custom_url:
-            raise ValueError("custom_url must be provided when source_type='custom_url'")
-        resp = requests.get(custom_url, stream=True)
-        if resp.status_code == 200:
-            import zipfile, io
-            z = zipfile.ZipFile(io.BytesIO(resp.content))
-            z.extractall(input_dir)
-            print(f"Extracted images from {custom_url}")
-        else:
-            raise RuntimeError(f"Failed to download from {custom_url} (status {resp.status_code})")
-    elif source_type == "upload":
-        from google.colab import files
-        uploaded = files.upload()
-        for name, content in uploaded.items():
-            with open(os.path.join(input_dir, name), "wb") as f:
-                f.write(content)
-        print(f"Uploaded {len(uploaded)} images")
-    else:
-        raise ValueError(f"Unknown source_type: {source_type}")
+    if not os.path.isdir(source_path):
+        raise NotADirectoryError(f"Source path not found: {source_path}")
 
-    imgs = [f for f in os.listdir(input_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
-    print(f"Total: {len(imgs)} images")
-    session.set_param("num_images", len(imgs))
-    session.mark_step("images_downloaded")
+    os.makedirs(input_dir, exist_ok=True)
+    count = 0
+    for fname in sorted(os.listdir(source_path)):
+        if fname.lower().endswith((".jpg", ".jpeg", ".png")):
+            shutil.copy2(os.path.join(source_path, fname), os.path.join(input_dir, fname))
+            count += 1
+
+    if count < min_images:
+        raise RuntimeError(f"Only {count} images found in {source_path} (need at least {min_images})")
+
+    print(f"Copied {count} images from {source_path}")
+    session.set_param("num_images", count)
+    session.mark_step("images_loaded")
 
 
 def download_precomputed_colmap(
