@@ -96,6 +96,8 @@ def download_images(
     input_dir="/content/gaussian-splatting/input",
     repo="kaarthik-balakrishnan/arena-3dgs",
     expected_images=91,
+    source_type="github",
+    custom_url=None,
 ):
     import requests
 
@@ -110,18 +112,39 @@ def download_images(
         session.mark_step("images_downloaded")
         return
 
-    api_url = f"https://api.github.com/repos/{repo}/contents/splat-files-processed"
-    resp = requests.get(api_url)
-    if resp.status_code == 200:
-        for item in resp.json():
-            if item["name"].lower().endswith((".jpg", ".jpeg", ".png")):
-                img_resp = requests.get(item["download_url"])
-                with open(os.path.join(input_dir, item["name"]), "wb") as f:
-                    f.write(img_resp.content)
-        imgs = [f for f in os.listdir(input_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
-        print(f"Downloaded {len(imgs)} images from GitHub")
+    if source_type == "github":
+        api_url = f"https://api.github.com/repos/{repo}/contents/splat-files-processed"
+        resp = requests.get(api_url)
+        if resp.status_code == 200:
+            for item in resp.json():
+                if item["name"].lower().endswith((".jpg", ".jpeg", ".png")):
+                    img_resp = requests.get(item["download_url"])
+                    with open(os.path.join(input_dir, item["name"]), "wb") as f:
+                        f.write(img_resp.content)
+            imgs = [f for f in os.listdir(input_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
+            print(f"Downloaded {len(imgs)} images from GitHub")
+        else:
+            print(f"GitHub API error ({resp.status_code}). Try a different source.")
+    elif source_type == "custom_url":
+        if not custom_url:
+            raise ValueError("custom_url must be provided when source_type='custom_url'")
+        resp = requests.get(custom_url, stream=True)
+        if resp.status_code == 200:
+            import zipfile, io
+            z = zipfile.ZipFile(io.BytesIO(resp.content))
+            z.extractall(input_dir)
+            print(f"Extracted images from {custom_url}")
+        else:
+            raise RuntimeError(f"Failed to download from {custom_url} (status {resp.status_code})")
+    elif source_type == "upload":
+        from google.colab import files
+        uploaded = files.upload()
+        for name, content in uploaded.items():
+            with open(os.path.join(input_dir, name), "wb") as f:
+                f.write(content)
+        print(f"Uploaded {len(uploaded)} images")
     else:
-        print(f"GitHub API error ({resp.status_code}). Upload images manually to {input_dir}")
+        raise ValueError(f"Unknown source_type: {source_type}")
 
     imgs = [f for f in os.listdir(input_dir) if f.lower().endswith((".jpg", ".jpeg", ".png"))]
     print(f"Total: {len(imgs)} images")
@@ -512,13 +535,26 @@ def convert_to_3dgs_format(
 def train_3dgs(
     session,
     iterations=30000,
-    max_gaussians=500000,
+    max_gaussians=0,
     log_interval=1000,
     max_res=1600,
     output_name="arena_3dgs",
     *,
     input_dir="/content/gaussian-splatting/input",
     output_base="/content/gaussian-splatting/output",
+    random_background=False,
+    opacity_reset_interval=3000,
+    densify_until_iter=15000,
+    densify_from_iter=500,
+    densify_interval=100,
+    sh_degree=3,
+    position_lr_init=0.00016,
+    position_lr_final=0.0000016,
+    feature_lr=0.0025,
+    opacity_lr=0.05,
+    scaling_lr=0.005,
+    rotation_lr=0.001,
+    lambda_dssim=0.2,
 ):
     step_name = f"training_{iterations // 1000}k"
 
@@ -540,6 +576,23 @@ def train_3dgs(
         max_gaussians=max_gaussians,
         log_interval=log_interval,
         max_res=max_res,
+        random_background=random_background,
+        max_init_points=50000,
+        densify_from_iter=densify_from_iter,
+        densify_until_iter=densify_until_iter,
+        densify_interval=densify_interval,
+        densify_grad_threshold=0.0002,
+        prune_opacity_threshold=0.005,
+        opacity_reset_interval=opacity_reset_interval,
+        position_lr_init=position_lr_init,
+        position_lr_final=position_lr_final,
+        position_lr_max_steps=30000,
+        feature_lr=feature_lr,
+        opacity_lr=opacity_lr,
+        scaling_lr=scaling_lr,
+        rotation_lr=rotation_lr,
+        lambda_dssim=lambda_dssim,
+        sh_degree=sh_degree,
     )
     try:
         train_fn(args)
