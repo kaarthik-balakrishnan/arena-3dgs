@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
 """
-Run COLMAP on a set of images and produce 3DGS-ready output.
+Run COLMAP on a set of images and produce 3DGS-ready input.
+
+Produces:
+  {name}_3dgs_input/          ← zip this and upload to Colab/Drive
+    images/                   all input images
+    sparse/0/                 COLMAP model (text format)
+      cameras.txt
+      images.txt
+      points3D.txt
+
+  {name}_colmap_workspace/    ← intermediate files (debugging only)
+    database.db               features + matches
+    sparse_global/            global SfM output
+    optimized_model/          best reconstruction (SIMPLE_RADIAL)
+    sparse.ply                sparse point cloud visualization
+
+What 3DGS actually needs:
+  - images/*.jpg              input photos
+  - sparse/0/cameras.txt      camera intrinsics (SIMPLE_RADIAL: f, cx, cy, k)
+  - sparse/0/images.txt       image poses & camera bindings
+  - sparse/0/points3D.txt     sparse 3D points
 
 Usage:
   python3 scripts/run_colmap.py -i sharp-frames
-  python3 scripts/run_colmap.py -i manual-selection
   python3 scripts/run_colmap.py -i manual-selection --skip-matching
-
-Output:
-  {name}_colmap_workspace/
-    images/           # copies of input images
-    sparse/0/         # 3DGS-ready COLMAP model (PINHOLE, binary + text)
-      cameras.txt     # PINHOLE format
-      images.txt
-      points3D.txt
-      cameras.bin
-      images.bin
-      points3D.bin
-    optimized_model/  # raw COLMAP output (SIMPLE_RADIAL)
-      txt/
-        cameras.txt
-        images.txt
-        points3D.txt
+  python3 scripts/run_colmap.py -i sharp-frames -o /tmp/my_output
 """
 import subprocess, sys, os, shutil, argparse
 from pathlib import Path
@@ -40,7 +44,6 @@ def run(cmd, desc):
     return result.returncode
 
 def colmap_binary():
-    """Find colmap binary."""
     for p in ["colmap", "/usr/local/bin/colmap", "/opt/homebrew/bin/colmap"]:
         if shutil.which(p):
             return p
@@ -75,53 +78,19 @@ def run_global_mapper(database, images, sparse_out):
         f"--database_path {database} "
         f"--image_path {images} "
         f"--output_path {sparse_out}",
-        "Running global SfM (rotation averaging + global positioning)"
+        "Running global SfM"
     )
 
-def convert_to_pinhole(model_dir):
-    """Convert SIMPLE_RADIAL → PINHOLE in cameras.txt in-place."""
-    cam_path = model_dir / "cameras.txt"
-    if not cam_path.exists():
-        print(f"  WARNING: cameras.txt not found at {cam_path}")
-        return False
-    with open(cam_path) as f:
-        lines = f.readlines()
-    modified = False
-    with open(cam_path, "w") as f:
-        for line in lines:
-            if line.startswith("#") or not line.strip():
-                f.write(line)
-            else:
-                parts = line.strip().split()
-                if parts[1] == "SIMPLE_RADIAL":
-                    f.write(f"{parts[0]} PINHOLE {parts[2]} {parts[3]} {parts[4]} {parts[4]} {parts[5]} {parts[6]}\n")
-                    modified = True
-                else:
-                    f.write(line)
-    if modified:
-        print("  Converted camera model: SIMPLE_RADIAL → PINHOLE")
-    return True
-
-def rebuild_binaries(model_dir):
-    """Rebuild cameras.bin, images.bin, points3D.bin from text files."""
-    for fn in ["cameras.bin", "images.bin", "points3D.bin"]:
-        p = model_dir / fn
-        if p.exists():
-            os.remove(p)
-    tmp = model_dir.parent / "_tmp_bin"
-    tmp.mkdir(parents=True, exist_ok=True)
+def convert_to_text(model_dir, txt_dir):
+    """Convert binary model to text format."""
+    txt_dir.mkdir(parents=True, exist_ok=True)
     run(
         f"{CM} model_converter "
         f"--input_path {model_dir} "
-        f"--output_path {tmp} "
-        f"--output_type BIN",
-        "Rebuilding binary files from text"
+        f"--output_path {txt_dir} "
+        f"--output_type TXT",
+        "Converting model to text format"
     )
-    for fn in ["cameras.bin", "images.bin", "points3D.bin"]:
-        src = tmp / fn
-        if src.exists():
-            shutil.copy2(src, model_dir / fn)
-    shutil.rmtree(tmp, ignore_errors=True)
 
 def export_ply(model_dir, ply_path):
     run(
@@ -144,7 +113,7 @@ def copy_images(images, dst):
     return count
 
 def find_best_model(sparse_out):
-    """Find the best reconstruction in sparse_out (highest image count)."""
+    """Find best reconstruction by image count."""
     best_count = 0
     best_path = None
     for sub in sorted(sparse_out.iterdir()):
@@ -166,16 +135,43 @@ def find_best_model(sparse_out):
             best_path = sub
     return best_count, best_path
 
+def build_3dgs_input(gs_dir, model_dir):
+    """Copy text-format COLMAP model into gs_dir for 3DGS training.
+    
+    Keeps SIMPLE_RADIAL camera model (train_3dgs_enhanced.py expects
+    params ordering [f, cx, cy, k]).
+    """
+    gs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Convert to text if needed
+    has_txt = all((model_dir / f).exists() for f in ["cameras.txt", "images.txt", "points3D.txt"])
+    if not has_txt:
+        txt_dir = model_dir / "txt"
+        convert_to_text(model_dir, txt_dir)
+        src = txt_dir
+    else:
+        src = model_dir
+
+    # Copy text files
+    for fname in ["cameras.txt", "images.txt", "points3D.txt"]:
+        shutil.copy2(src / fname, gs_dir / fname)
+
+    with open(gs_dir / "images.txt") as f:
+        n_imgs = sum(1 for l in f if l.strip() and not l.startswith("#")) // 2
+    print(f"\n  3DGS input ready at {gs_dir} ({n_imgs} images, SIMPLE_RADIAL)")
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Run COLMAP pipeline and produce 3DGS-ready output.",
+        description="Run COLMAP and produce 3DGS-ready input folder.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="Examples:\n  python3 scripts/run_colmap.py -i sharp-frames\n  python3 scripts/run_colmap.py -i manual-selection --skip-matching",
+        epilog="Examples:\n  python3 scripts/run_colmap.py -i sharp-frames\n  python3 scripts/run_colmap.py -i manual-selection\n  python3 scripts/run_colmap.py -i sharp-frames -o /tmp/my_3dgs_input",
     )
     parser.add_argument("-i", "--input-dir", required=True,
                         help="Directory containing input images")
     parser.add_argument("--skip-matching", action="store_true",
                         help="Skip feature extraction and matching if database exists")
+    parser.add_argument("-o", "--output-dir", default=None,
+                        help="Output directory for 3DGS input (default: {input_parent}/{name}_3dgs_input)")
     args = parser.parse_args()
 
     images = Path(args.input_dir).resolve()
@@ -188,13 +184,15 @@ def main():
     database = workspace / "database.db"
     sparse_out = workspace / "sparse_global"
     optimized = workspace / "optimized_model"
-    gs_dir = workspace / "sparse" / "0"
-    images_dst = workspace / "images"
+
+    # ── Determine 3DGS output directory ────────────────────────
+    gs_input_dir = Path(args.output_dir) if args.output_dir else images.parent / f"{name}_3dgs_input"
 
     print("=" * 60)
     print(f"  COLMAP → 3DGS Pipeline")
-    print(f"  Input:  {images}/")
-    print(f"  Output: {workspace}/")
+    print(f"  Input:         {images}/")
+    print(f"  Workspace:     {workspace}/")
+    print(f"  3DGS output:   {gs_input_dir}/")
     print("=" * 60)
 
     image_files = []
@@ -202,7 +200,7 @@ def main():
         image_files.extend(sorted(images.glob(ext)))
     print(f"\n  Found {len(image_files)} images")
 
-    # ── Step 1: Feature extraction ────────────────────────────
+    # ── Step 1: Feature extraction & matching ──────────────────
     workspace.mkdir(parents=True, exist_ok=True)
     if database.exists() and args.skip_matching:
         print(f"\n  Found existing database: {database}")
@@ -211,8 +209,10 @@ def main():
         extract_features(images, database)
         match_exhaustive(database)
 
-    # ── Step 2: Global SfM ────────────────────────────────────
-    if (optimized / "images.bin").exists() or (optimized / "images.txt").exists():
+    # ── Step 2: Global SfM ─────────────────────────────────────
+    model_bin = optimized / "images.bin"
+    model_txt = optimized / "images.txt"
+    if model_bin.exists() or model_txt.exists():
         print(f"\n  Reconstruction already exists at {optimized}")
     else:
         run_global_mapper(database, images, sparse_out)
@@ -226,43 +226,34 @@ def main():
             print("\n  No model produced. Try removing --skip-matching.")
             return 1
 
-    # ── Step 3: Copy images ───────────────────────────────────
-    n_copied = copy_images(images, images_dst)
-    print(f"\n  Copied {n_copied} images to {images_dst}")
+    # ── Step 3: Copy images ────────────────────────────────────
+    gs_images = gs_input_dir / "images"
+    n_copied = copy_images(images, gs_images)
+    print(f"\n  Copied {n_copied} images to {gs_images}")
 
-    # ── Step 4: Build 3DGS input (PINHOLE + binaries) ────────
-    if optimized.exists():
-        model_txt = optimized / "txt"
-        if not model_txt.exists():
-            model_txt.mkdir(exist_ok=True)
-            convert_to_txt = lambda: run(
-                f"{CM} model_converter --input_path {optimized} --output_path {model_txt} --output_type TXT",
-                "Converting model to text format"
-            )
-            convert_to_txt()
+    # ── Step 4: Build 3DGS input (SIMPLE_RADIAL text model) ───
+    gs_sparse = gs_input_dir / "sparse" / "0"
+    build_3dgs_input(gs_sparse, optimized)
+    export_ply(optimized, workspace / "sparse.ply")
 
-        # Create sparse/0/ as a copy of the text model, then convert
-        if gs_dir.exists():
-            shutil.rmtree(gs_dir)
-        shutil.copytree(model_txt, gs_dir)
-        print(f"\n  Preparing 3DGS input at {gs_dir}")
-
-        convert_to_pinhole(gs_dir)
-        rebuild_binaries(gs_dir)
-        export_ply(gs_dir, workspace / "sparse.ply")
-
-        # Count registered images
-        with open(gs_dir / "images.txt") as f:
-            n_imgs = sum(1 for l in f if l.strip() and not l.startswith("#")) // 2
-        print(f"\n  {'='*50}")
-        print(f"  3DGS-ready output: {workspace}/")
-        print(f"  {n_imgs} images, PINHOLE camera model")
-        print(f"  {'='*50}")
-        print(f"\n  Train locally:")
-        print(f"    python3 scripts/train_3dgs_enhanced.py -i {workspace}")
-        print(f"\n  View sparse point cloud:")
-        print(f"    python3 scripts/viz_colmap.py --input {gs_dir}")
-        print(f"\n  Or upload to Colab notebook (zip images + sparse/0/)")
+    # ── Print summary ──────────────────────────────────────────
+    print(f"\n  {'='*50}")
+    print(f"  3DGS input folder: {gs_input_dir}/")
+    print(f"    {gs_images}/")
+    print(f"    {gs_sparse}/")
+    print(f"      cameras.txt")
+    print(f"      images.txt")
+    print(f"      points3D.txt")
+    print(f"  {'='*50}")
+    print(f"\n  Train locally:")
+    print(f"    python3 scripts/train_3dgs_enhanced.py -i {gs_input_dir}")
+    print(f"\n  Upload to Colab:")
+    print(f"    cd {gs_input_dir.parent} && zip -r {name}_3dgs_input.zip {name}_3dgs_input/")
+    print(f"    Upload the zip to Google Drive, then in Colab:")
+    print(f"    - Extract to /content/gaussian-splatting/input")
+    print(f"    - Run Steps 1, 2, then skip to Step 6")
+    print(f"\n  Workspace (intermediate files, can be deleted):")
+    print(f"    {workspace}/")
 
     return 0
 

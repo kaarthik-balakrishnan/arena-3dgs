@@ -129,11 +129,10 @@ All pipeline functions accept a `Session` object (from `scripts.session`) for id
 
 **What it does:**
 1. Moves images from `input_dir` into `images_dir/`
-2. Converts COLMAP camera model from SIMPLE_RADIAL → PINHOLE (in `cameras.txt`)
-3. Removes stale `.bin` files
-4. Runs `colmap model_converter --output_type BIN` to rebuild binary files
+2. Verifies `cameras.txt`, `images.txt`, `points3D.txt` exist in `sparse_dir`
+3. Keeps camera model as-is (SIMPLE_RADIAL — `[f, cx, cy, k]` params expected by trainer)
 
-**Generates:** `cameras.txt` (PINHOLE model), `cameras.bin`, `images.bin`, `points3D.bin` in `sparse_dir`. Sets `training_images` session param.
+**Generates:** Organizes images into `images_dir`. Sets `training_images` session param. Does NOT modify camera model (previously converted SIMPLE_RADIAL → PINHOLE, which was a bug — the training code reads params as `[f, cx, cy, k]`).
 
 ---
 
@@ -206,7 +205,7 @@ Maps model choice strings to `{dir, expected_imgs, desc}` for pre-computed COLMA
 |---|---|
 | `scripts/session.py` | `Session` class (Google Drive checkpointing, idempotency) |
 | `scripts/train_3dgs_enhanced.py` | Actual 3DGS training loop |
-| `scripts/run_colmap.py` | Local COLMAP CLI (`-i <images_dir>`) |
+| `scripts/run_colmap.py` | Local COLMAP CLI (`-i <images_dir>`). Produces `{name}_3dgs_input/` (zip-ready: `images/` + `sparse/0/` with text SIMPLE_RADIAL model) |
 | `scripts/compress_splat.py` | Convert PLY → .splat (standard or compressed) |
 | `scripts/export_3dgs_input.py` | Convert raw COLMAP + images → 3DGS input format |
 | `scripts/chamber_splat.py` | End-to-end alternative pipeline |

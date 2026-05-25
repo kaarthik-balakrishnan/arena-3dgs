@@ -502,45 +502,9 @@ def convert_to_3dgs_format(
     if missing:
         raise FileNotFoundError(f"Missing COLMAP data: {missing}. Run COLMAP or download pre-computed data first.")
 
-    cam_path = os.path.join(sparse_dir, "cameras.txt")
-    with open(cam_path) as f:
-        lines = f.readlines()
-    modified = False
-    with open(cam_path, "w") as f:
-        for line in lines:
-            if line.startswith("#") or not line.strip():
-                f.write(line)
-            else:
-                parts = line.strip().split()
-                if parts[1] == "SIMPLE_RADIAL":
-                    f.write(f"{parts[0]} PINHOLE {parts[2]} {parts[3]} {parts[4]} {parts[4]} {parts[5]} {parts[6]}\n")
-                    modified = True
-                else:
-                    f.write(line)
-    if modified:
-        print("  Converted camera model: SIMPLE_RADIAL -> PINHOLE")
-
-    for fn in ["cameras.bin", "images.bin", "points3D.bin"]:
-        p = os.path.join(sparse_dir, fn)
-        if os.path.exists(p):
-            os.remove(p)
-    bin_dir = tempfile.mkdtemp(prefix="sparse_bin_")
-    os.makedirs(bin_dir, exist_ok=True)
-    result = subprocess.run(
-        ["colmap", "model_converter", "--input_path", sparse_dir, "--output_path", bin_dir, "--output_type", "BIN"],
-        capture_output=True, text=True,
-    )
-    if os.path.exists(os.path.join(bin_dir, "images.bin")):
-        for fn in ["cameras.bin", "images.bin", "points3D.bin"]:
-            shutil.copy2(os.path.join(bin_dir, fn), os.path.join(sparse_dir, fn))
-        shutil.rmtree(bin_dir, ignore_errors=True)
-        print("  Built binary files (cameras.bin, images.bin, points3D.bin)")
-    else:
-        print(f"WARNING: Binary conversion failed: {result.stderr}")
-
     with open(os.path.join(sparse_dir, "images.txt")) as f:
         num_images = sum(1 for l in f if l.strip() and not l.startswith("#")) // 2
-    print(f"\nReady for training: {num_images} images, PINHOLE model")
+    print(f"\nReady for training: {num_images} images, SIMPLE_RADIAL model")
     session.set_param("training_images", num_images)
     session.mark_step("data_converted")
 

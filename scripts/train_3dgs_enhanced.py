@@ -272,9 +272,13 @@ def train(args):
         img_w, img_h = new_w, new_h
 
     cam = cams[list(cams.keys())[0]]
-    fx = cam['params'][0] * scale
-    cx = cam['params'][1] * scale
-    cy = cam['params'][2] * scale
+    p = cam['params']
+    if cam['model'] in ('SIMPLE_RADIAL', 'SIMPLE_PINHOLE'):
+        fx = p[0] * scale; cx = p[1] * scale; cy = p[2] * scale
+    elif cam['model'] == 'PINHOLE':
+        fx = p[0] * scale; cx = p[2] * scale; cy = p[3] * scale
+    else:
+        fx = p[0] * scale; cx = p[1] * scale; cy = p[2] * scale
 
     K = torch.tensor([[fx, 0, cx], [0, fx, cy], [0, 0, 1]], dtype=torch.float32, device=device)
 
