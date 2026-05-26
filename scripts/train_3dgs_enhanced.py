@@ -543,7 +543,7 @@ def train(args):
                     percent_dense=args.percent_dense,
                     radii=max_radii2D,
                     max_screen_size=size_threshold or 0,
-                    force_split_scale=args.force_split_scale * scene_extent,
+                    force_split_scale=getattr(args, 'force_split_scale', 0.02) * scene_extent,
                 )
                 new_means, new_scales, new_opacities, new_quats, \
                     new_sh_dc, new_sh_rest, old_idx, grad_accum, count_accum = result
