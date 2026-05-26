@@ -377,11 +377,13 @@ def train_3dgs(
     densify_from_iter=500,
     densify_interval=100,
     sh_degree=3,
+    sh_degree_interval=1000,
     position_lr_init=0.00016,
     position_lr_final=0.0000016,
     feature_lr=0.0025,
     opacity_lr=0.025,
     percent_dense=0.01,
+    force_split_scale=0.02,
     scaling_lr=0.005,
     rotation_lr=0.001,
     lambda_dssim=0.2,
@@ -418,7 +420,9 @@ def train_3dgs(
         rotation_lr=rotation_lr,
         lambda_dssim=lambda_dssim,
         sh_degree=sh_degree,
+        sh_degree_interval=sh_degree_interval,
         percent_dense=percent_dense,
+        force_split_scale=force_split_scale,
     )
     try:
         train_fn(args)
