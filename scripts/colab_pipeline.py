@@ -380,7 +380,8 @@ def train_3dgs(
     position_lr_init=0.00016,
     position_lr_final=0.0000016,
     feature_lr=0.0025,
-    opacity_lr=0.05,
+    opacity_lr=0.025,
+    percent_dense=0.01,
     scaling_lr=0.005,
     rotation_lr=0.001,
     lambda_dssim=0.2,
@@ -417,6 +418,7 @@ def train_3dgs(
         rotation_lr=rotation_lr,
         lambda_dssim=lambda_dssim,
         sh_degree=sh_degree,
+        percent_dense=percent_dense,
     )
     try:
         train_fn(args)
