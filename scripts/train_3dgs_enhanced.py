@@ -611,8 +611,8 @@ def train(args):
 
         optimizer.step()
 
-        # ── SH degree progression (increase every 1000 iters) ──
-        if (it + 1) % 1000 == 0 and active_sh_degree < max_sh_degree:
+        # ── SH degree progression ──
+        if (it + 1) % getattr(args, 'sh_degree_interval', 1000) == 0 and active_sh_degree < max_sh_degree:
             active_sh_degree += 1
             print(f"\n  SH degree increased to {active_sh_degree}")
 
@@ -735,6 +735,8 @@ if __name__ == "__main__":
     # SH
     parser.add_argument("--sh-degree", type=int, default=3,
                         help="Max spherical harmonics degree")
+    parser.add_argument("--sh-degree-interval", type=int, default=1000,
+                        help="Iterations between SH degree increases (default 1000 for 30K train; increase for short runs)")
 
     # Augmentation
     parser.add_argument("--random-background", action="store_true", default=False,
