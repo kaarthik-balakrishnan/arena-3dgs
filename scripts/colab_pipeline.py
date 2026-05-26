@@ -77,12 +77,9 @@ def install_dependencies(
 
     enhanced = os.path.join(scripts_dir, "train_3dgs_enhanced.py")
     os.makedirs(scripts_dir, exist_ok=True)
-    if not os.path.exists(enhanced):
-        print("Downloading enhanced training script from GitHub...")
-        urllib.request.urlretrieve(f"{repo_url}/scripts/train_3dgs_enhanced.py", enhanced)
-        print("  Done.")
-    else:
-        print("Enhanced training script already downloaded.")
+    print("Downloading latest enhanced training script from GitHub...")
+    urllib.request.urlretrieve(f"{repo_url}/scripts/train_3dgs_enhanced.py", enhanced)
+    print("  Done.")
     sys.path.insert(0, scripts_dir)
 
     ensure_virtual_display()
