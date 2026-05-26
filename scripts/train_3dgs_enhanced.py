@@ -132,7 +132,8 @@ def ssim(img1, img2, window_size=11, sigma=1.5, size_average=True):
 @torch.no_grad()
 def densification(means, scales, opacities, grad_accum, count_accum,
                   densify_grad_threshold=0.0002, prune_opacity_threshold=0.005,
-                  max_gaussians=0, scene_extent=1.0):
+                  max_gaussians=0, scene_extent=1.0, percent_dense=0.01,
+                  radii=None, max_screen_size=20):
     """
     Clone/split Gaussians with high average screen-space gradient magnitude,
     prune those with opacity below threshold.
@@ -144,12 +145,12 @@ def densification(means, scales, opacities, grad_accum, count_accum,
 
     # Average accumulated L2 gradient norm per Gaussian
     grad_avg = grad_accum / count_accum.clamp(min=1)
-    size_threshold = 0.01 * scene_extent
+    size_threshold = percent_dense * scene_extent
 
-    # Clone: high grad, small scale
-    clone_mask = (grad_avg >= densify_grad_threshold) & (scales.mean(dim=-1) <= size_threshold)
-    # Split: high grad, large scale
-    split_mask = (grad_avg >= densify_grad_threshold) & (scales.mean(dim=-1) > size_threshold)
+    # Clone: high grad, small scale (paper: max(scale) <= size_threshold)
+    clone_mask = (grad_avg >= densify_grad_threshold) & (scales.max(dim=-1).values <= size_threshold)
+    # Split: high grad, large scale (paper: max(scale) > size_threshold)
+    split_mask = (grad_avg >= densify_grad_threshold) & (scales.max(dim=-1).values > size_threshold)
 
     n_clone = clone_mask.sum().item()
     n_split = split_mask.sum().item()
@@ -195,6 +196,9 @@ def densification(means, scales, opacities, grad_accum, count_accum,
 
     # Prune low-opacity Gaussians
     prune_mask = torch.sigmoid(opacities) < prune_opacity_threshold
+    # Screen-size pruning (paper: remove Gaussians with large screen-space radius)
+    if radii is not None and max_screen_size > 0:
+        prune_mask = prune_mask | (radii > max_screen_size)
     means = means[~prune_mask]
     scales = scales[~prune_mask]
     opacities = opacities[~prune_mask]
@@ -202,7 +206,7 @@ def densification(means, scales, opacities, grad_accum, count_accum,
     # Reset gradient accumulators to match new Gaussian count
     n_final = len(means)
     grad_accum = torch.zeros(n_final, device=means.device)
-    count_accum = torch.zeros(n_final, 1, device=means.device)
+    count_accum = torch.zeros(n_final, device=means.device)
 
     return means, scales, opacities, grad_accum, count_accum
 
@@ -213,16 +217,19 @@ def train(args):
     print(f"Using device: {device}")
 
     input_dir = Path(args.input_dir)
-    sparse_dir = input_dir / "sparse" / "0"
-    if not sparse_dir.exists():
-        sparse_dir = input_dir / "sparse" / "0" / "txt"
-    if not sparse_dir.exists():
-        for p in [BASE / "colmap_data", BASE / "colmap_workspace" / "sparse_registered",
-                  BASE / "colmap_workspace" / "optimized_model"]:
-            if p.exists():
-                sparse_dir = p / "txt" if (p / "txt").exists() else p
-                if sparse_dir.exists():
-                    break
+    if hasattr(args, 'sparse_dir') and args.sparse_dir:
+        sparse_dir = Path(args.sparse_dir)
+    else:
+        sparse_dir = input_dir / "sparse" / "0"
+        if not sparse_dir.exists():
+            sparse_dir = input_dir / "sparse" / "0" / "txt"
+        if not sparse_dir.exists():
+            for p in [BASE / "colmap_data", BASE / "colmap_workspace" / "sparse_registered",
+                      BASE / "colmap_workspace" / "optimized_model"]:
+                if p.exists():
+                    sparse_dir = p / "txt" if (p / "txt").exists() else p
+                    if sparse_dir.exists():
+                        break
 
     images_dir = input_dir / "images"
     if not images_dir.exists():
@@ -338,15 +345,15 @@ def train(args):
     scales = torch.nn.Parameter(scales)
     opacities = torch.nn.Parameter(torch.log(opacities / (1 - opacities + 1e-10)))
     max_sh_degree = args.sh_degree
-    # SH storage: DC (N, 1, 3) and rest (N, 15, 3) with separate LRs per paper
-    n_sh_rest = (max_sh_degree + 1) ** 2 - 1  # 15 for degree 3
-    colors_sh_dc = ((colors_init - 0.5) / C0).unsqueeze(1)  # (N, 1, 3)
+    n_sh_rest = (max_sh_degree + 1) ** 2 - 1
+    colors_sh_dc = ((colors_init - 0.5) / C0).unsqueeze(1)
     colors_sh_rest = torch.zeros(n_points, n_sh_rest, 3, dtype=torch.float32, device=device)
 
-    # Per-parameter LR groups (matches paper & official code)
-    # SH rest features use feature_lr / 20.0
+    scene_extent = means.data.norm(dim=-1).max().item()
+    spatial_lr_scale = scene_extent
+
     params = [
-        {'params': [means], 'lr': args.position_lr_init, 'name': 'xyz'},
+        {'params': [means], 'lr': args.position_lr_init * spatial_lr_scale, 'name': 'xyz'},
         {'params': [quats], 'lr': args.rotation_lr, 'name': 'rotation'},
         {'params': [scales], 'lr': args.scaling_lr, 'name': 'scaling'},
         {'params': [opacities], 'lr': args.opacity_lr, 'name': 'opacity'},
@@ -354,16 +361,14 @@ def train(args):
         {'params': [colors_sh_rest], 'lr': args.feature_lr / 20.0, 'name': 'f_rest'},
     ]
     optimizer = torch.optim.Adam(params, eps=1e-15)
-    scene_extent = means.data.norm(dim=-1).max().item()
 
-    # Position LR scheduler (exponential decay, per paper)
-    def get_xyz_lr(iteration, lr_init=args.position_lr_init,
-                   lr_final=args.position_lr_final,
+    # Position LR scheduler (exponential decay, per paper, scaled by spatial_lr_scale)
+    def get_xyz_lr(iteration, lr_init=args.position_lr_init * spatial_lr_scale,
+                   lr_final=args.position_lr_final * spatial_lr_scale,
                    max_steps=args.position_lr_max_steps):
         t = min(iteration, max_steps) / max_steps
         return lr_init * (lr_final / lr_init) ** t
 
-    # SH degree tracking
     active_sh_degree = 0
 
     imgs_gt = torch.tensor(np.stack(valid_imgs) / 255.0, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
@@ -374,9 +379,11 @@ def train(args):
     densify_interval = args.densify_interval
     opacity_reset_interval = args.opacity_reset_interval
 
+    max_radii2D = torch.zeros(n_points, device=device)
+
     # Gradient tracking for densification (scalar L2 norm, per paper)
     grad_accum = torch.zeros(n_points, device=device)
-    count_accum = torch.zeros(n_points, 1, device=device)
+    count_accum = torch.zeros(n_points, device=device)
 
     from gsplat import rasterization as gs_rasterization
 
@@ -424,6 +431,8 @@ def train(args):
             sh_degree=active_sh_degree,
         )
 
+        radii = info.get("radius")
+
         renders = renders.permute(0, 3, 1, 2)  # (1, H, W, 3) → (1, 3, H, W)
         L1 = F.l1_loss(renders, gt)
         ssim_val = ssim(renders, gt)
@@ -435,14 +444,19 @@ def train(args):
         with torch.no_grad():
             # Gradient tracking: accumulate L2 norm of 3D position gradient
             if means.grad is not None and it < densify_until_iter:
-                grad_norm = means.grad.detach().norm(dim=-1)  # L2 norm, per paper
+                grad_norm = means.grad.detach().norm(dim=-1)
                 grad_accum += grad_norm
                 visible = (grad_norm > 0).float()
-                count_accum += visible.unsqueeze(-1)
+                count_accum += visible
+                # Track max screen-space radii (per paper for screen-size pruning)
+                if radii is not None:
+                    max_radii2D = torch.max(max_radii2D[:len(radii)], radii)
 
             # Clone / split / prune (every densify_interval)
             if (densify_from_iter <= it < densify_until_iter
                     and it > 0 and it % densify_interval == 0):
+                # Screen-size threshold active only after opacity reset (per paper)
+                size_threshold = 20 if it > opacity_reset_interval else None
                 new_means, new_scales, new_opacities, grad_accum, count_accum = \
                     densification(
                         means.data, scales_act.data, opacities.data,
@@ -451,6 +465,9 @@ def train(args):
                         prune_opacity_threshold=args.prune_opacity_threshold,
                         max_gaussians=args.max_gaussians,
                         scene_extent=scene_extent,
+                        percent_dense=args.percent_dense,
+                        radii=max_radii2D,
+                        max_screen_size=size_threshold or 0,
                     )
 
                 n_new = len(new_means)
@@ -468,8 +485,10 @@ def train(args):
                     colors_sh_dc = torch.nn.Parameter(colors_sh_dc_new)
                     colors_sh_rest = torch.nn.Parameter(colors_sh_rest_new)
 
+                    max_radii2D = torch.zeros(n_new, device=device)
+
                     params = [
-                        {'params': [means], 'lr': args.position_lr_init, 'name': 'xyz'},
+                        {'params': [means], 'lr': args.position_lr_init * spatial_lr_scale, 'name': 'xyz'},
                         {'params': [quats], 'lr': args.rotation_lr, 'name': 'rotation'},
                         {'params': [scales], 'lr': args.scaling_lr, 'name': 'scaling'},
                         {'params': [opacities], 'lr': args.opacity_lr, 'name': 'opacity'},
@@ -559,6 +578,8 @@ if __name__ == "__main__":
     # Data
     parser.add_argument("--input-dir", "-i", default=str(BASE / "gaussian-splatting" / "input"),
                         help="Input directory with images/ and sparse/0/")
+    parser.add_argument("--sparse-dir", default=None,
+                        help="Explicit sparse directory (overrides input_dir/sparse/0)")
     parser.add_argument("--output-dir", "-o", default=str(BASE / "output"),
                         help="Output directory for PLY files")
     parser.add_argument("--max-res", type=int, default=1600,
@@ -597,8 +618,10 @@ if __name__ == "__main__":
                         help="Steps for position LR decay")
     parser.add_argument("--feature-lr", type=float, default=0.0025,
                         help="Feature/SH learning rate")
-    parser.add_argument("--opacity-lr", type=float, default=0.05,
-                        help="Opacity learning rate")
+    parser.add_argument("--opacity-lr", type=float, default=0.025,
+                        help="Opacity learning rate (paper: 0.025)")
+    parser.add_argument("--percent-dense", type=float, default=0.01,
+                        help="Percentage of scene extent for clone/split threshold (paper: 0.01)")
     parser.add_argument("--scaling-lr", type=float, default=0.005,
                         help="Scaling learning rate")
     parser.add_argument("--rotation-lr", type=float, default=0.001,
