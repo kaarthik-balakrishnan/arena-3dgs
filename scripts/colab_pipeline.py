@@ -122,12 +122,11 @@ def load_images(
 
 def download_precomputed_colmap(
     session,
-    model_choice=None,
+    model_url=None,
     *,
     sparse_dir="/content/gaussian-splatting/input/sparse/0",
-    repo_url="https://raw.githubusercontent.com/kaarthik-balakrishnan/arena-3dgs/main",
 ):
-    import requests
+    import requests, shutil
 
     if session.is_step_done("colmap_downloaded"):
         print("Pre-computed COLMAP data already downloaded. Verifying files...")
@@ -141,27 +140,37 @@ def download_precomputed_colmap(
         session.mark_step("colmap_downloaded")
         return
 
-    if model_choice is None or model_choice not in COLMAP_MODELS:
-        model_choice = "84-image full"
+    if model_url is None:
+        model_url = "https://raw.githubusercontent.com/kaarthik-balakrishnan/arena-3dgs/main/colmap_data_84"
 
-    info = COLMAP_MODELS[model_choice]
+    is_url = model_url.startswith(("http://", "https://"))
+    print(f"Source: {'URL' if is_url else 'Local path'} -> {model_url}")
+
     for name in ["cameras.txt", "images.txt", "points3D.txt"]:
-        url = f"{repo_url}/{info['dir']}/{name}"
-        print(f"Downloading {name} from {info['dir']}...")
-        r = requests.get(url)
-        if r.status_code == 200:
-            with open(os.path.join(sparse_dir, name), "w") as f:
-                f.write(r.text)
+        dest = os.path.join(sparse_dir, name)
+        if is_url:
+            url = f"{model_url}/{name}"
+            print(f"  Downloading {name}...")
+            r = requests.get(url)
+            if r.status_code == 200:
+                with open(dest, "w") as f:
+                    f.write(r.text)
+            else:
+                print(f"  FAILED (status {r.status_code})")
         else:
-            print(f"  FAILED (status {r.status_code})")
+            src = os.path.join(model_url, name)
+            if os.path.exists(src):
+                shutil.copy2(src, dest)
+                print(f"  Copied {name}")
+            else:
+                print(f"  NOT FOUND: {src}")
 
-    session.set_param("colmap_download_choice", model_choice)
-    session.set_param("expected_images", info["expected_imgs"])
+    session.set_param("colmap_model_url", model_url)
 
     with open(os.path.join(sparse_dir, "images.txt")) as f:
         img_lines = [l for l in f if l.strip() and not l.startswith("#")]
         num_images = len(img_lines) // 2
-    print(f"\nCOLMAP data: {num_images} registered images (SIMPLE_RADIAL)")
+    print(f"\nCOLMAP data: {num_images} registered images")
     session.mark_step("colmap_downloaded")
 
 
@@ -226,6 +235,11 @@ def run_colmap_features(
     input_dir="/content/gaussian-splatting/input",
     colmap_dir="/content/gaussian-splatting/sparse",
     db_path="/content/gaussian-splatting/sparse/database.db",
+    camera_model="SIMPLE_RADIAL",
+    single_camera=True,
+    max_num_features=8192,
+    first_octave=-1,
+    peak_threshold=0.01,
 ):
     check_colmap()
     os.makedirs(colmap_dir, exist_ok=True)
@@ -247,12 +261,12 @@ def run_colmap_features(
                 f"colmap feature_extractor "
                 f"--database_path {db_path} "
                 f"--image_path {input_dir} "
-                f"--ImageReader.camera_model SIMPLE_RADIAL "
-                f"--ImageReader.single_camera 1 "
+                f"--ImageReader.camera_model {camera_model} "
+                f"--ImageReader.single_camera {1 if single_camera else 0} "
                 f"--SiftExtraction.use_gpu 0 "
-                f"--SiftExtraction.max_num_features 8192 "
-                f"--SiftExtraction.first_octave -1 "
-                f"--SiftExtraction.peak_threshold 0.01",
+                f"--SiftExtraction.max_num_features {max_num_features} "
+                f"--SiftExtraction.first_octave {first_octave} "
+                f"--SiftExtraction.peak_threshold {peak_threshold}",
                 shell=True, check=True,
             )
             print("\nSaving checkpoint to Drive...")
@@ -269,6 +283,8 @@ def run_colmap_matching(
     session,
     *,
     db_path="/content/gaussian-splatting/sparse/database.db",
+    matching_mode="sequential + exhaustive",
+    sequential_overlap=20,
 ):
     check_colmap()
     os.environ["QT_QPA_PLATFORM"] = "offscreen"
@@ -287,24 +303,28 @@ def run_colmap_matching(
         session.mark_step("colmap_matching")
         return
 
-    print("\n=== Sequential Matching ===")
-    subprocess.run(
-        f"colmap sequential_matcher "
-        f"--database_path {db_path} "
-        f"--SiftMatching.use_gpu 0 "
-        f"--SequentialMatching.overlap 20",
-        shell=True, check=True,
-    )
-    session.save_to_drive(db_path, "database.db")
+    mode = matching_mode.lower()
 
-    print("\n=== Exhaustive Matching ===")
-    subprocess.run(
-        f"colmap exhaustive_matcher "
-        f"--database_path {db_path} "
-        f"--SiftMatching.use_gpu 0",
-        shell=True, check=True,
-    )
-    session.save_to_drive(db_path, "database.db")
+    if "sequential" in mode:
+        print("\n=== Sequential Matching ===")
+        subprocess.run(
+            f"colmap sequential_matcher "
+            f"--database_path {db_path} "
+            f"--SiftMatching.use_gpu 0 "
+            f"--SequentialMatching.overlap {sequential_overlap}",
+            shell=True, check=True,
+        )
+        session.save_to_drive(db_path, "database.db")
+
+    if "exhaustive" in mode:
+        print("\n=== Exhaustive Matching ===")
+        subprocess.run(
+            f"colmap exhaustive_matcher "
+            f"--database_path {db_path} "
+            f"--SiftMatching.use_gpu 0",
+            shell=True, check=True,
+        )
+        session.save_to_drive(db_path, "database.db")
 
     conn = sqlite3.connect(db_path)
     verified = conn.execute("SELECT COUNT(*) FROM two_view_geometries").fetchone()[0]
@@ -320,6 +340,13 @@ def run_colmap_reconstruction(
     colmap_dir="/content/gaussian-splatting/sparse",
     db_path="/content/gaussian-splatting/sparse/database.db",
     sparse_dir="/content/gaussian-splatting/input/sparse/0",
+    multiple_models=True,
+    max_num_models=50,
+    init_min_tri_angle=4,
+    init_min_num_inliers=15,
+    abs_pose_min_num_inliers=8,
+    ba_local_max_num_iterations=25,
+    ba_global_max_num_iterations=50,
 ):
     import struct
 
@@ -346,13 +373,13 @@ def run_colmap_reconstruction(
             f"--database_path {db_path} "
             f"--image_path {input_dir} "
             f"--output_path {colmap_dir} "
-            f"--Mapper.multiple_models 1 "
-            f"--Mapper.max_num_models 50 "
-            f"--Mapper.init_min_tri_angle 4 "
-            f"--Mapper.init_min_num_inliers 15 "
-            f"--Mapper.abs_pose_min_num_inliers 8 "
-            f"--Mapper.ba_local_max_num_iterations 25 "
-            f"--Mapper.ba_global_max_num_iterations 50",
+            f"--Mapper.multiple_models {1 if multiple_models else 0} "
+            f"--Mapper.max_num_models {max_num_models} "
+            f"--Mapper.init_min_tri_angle {init_min_tri_angle} "
+            f"--Mapper.init_min_num_inliers {init_min_num_inliers} "
+            f"--Mapper.abs_pose_min_num_inliers {abs_pose_min_num_inliers} "
+            f"--Mapper.ba_local_max_num_iterations {ba_local_max_num_iterations} "
+            f"--Mapper.ba_global_max_num_iterations {ba_global_max_num_iterations}",
             shell=True, check=True,
         )
 
@@ -386,6 +413,7 @@ def run_colmap_merge(
     colmap_dir="/content/gaussian-splatting/sparse",
     merged_dir="/content/gaussian-splatting/sparse_merged",
     sparse_dir="/content/gaussian-splatting/input/sparse/0",
+    min_images_for_merge=5,
 ):
     import struct
 
@@ -412,7 +440,7 @@ def run_colmap_merge(
             if os.path.exists(img_path):
                 with open(img_path, "rb") as f:
                     n = struct.unpack("Q", f.read(8))[0]
-                if n >= 5:
+                if n >= min_images_for_merge:
                     models.append((sub, n))
                     print(f"  Found model {sub}: {n} images")
 
