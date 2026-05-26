@@ -143,6 +143,20 @@ def densification(means, scales, opacities, grad_accum, count_accum,
     if max_gaussians > 0 and n >= max_gaussians:
         return means, scales, opacities, grad_accum, count_accum
 
+    # Screen-size pruning: remove Gaussians with large screen-space radius
+    # Applied BEFORE clone/split while radii still matches tensor sizes
+    if radii is not None and max_screen_size > 0:
+        screen_mask = radii > max_screen_size
+        keep = ~screen_mask
+        means = means[keep]
+        scales = scales[keep]
+        opacities = opacities[keep]
+        grad_accum = grad_accum[keep]
+        count_accum = count_accum[keep]
+        n = len(means)
+        if max_gaussians > 0 and n >= max_gaussians:
+            return means, scales, opacities, grad_accum, count_accum
+
     # Average accumulated L2 gradient norm per Gaussian
     grad_avg = grad_accum / count_accum.clamp(min=1)
     size_threshold = percent_dense * scene_extent
@@ -164,7 +178,6 @@ def densification(means, scales, opacities, grad_accum, count_accum,
         clone_m = means[clone_mask]
         clone_s = scales[clone_mask]
         clone_o = opacities[clone_mask]
-        # Per-paper: clones keep the same scale (no halving); small positional noise
         noise = torch.randn_like(clone_m) * 0.001 * scene_extent
         parts_m.append(clone_m + noise)
         parts_s.append(clone_s)
@@ -175,11 +188,9 @@ def densification(means, scales, opacities, grad_accum, count_accum,
         split_m = means[split_mask]
         split_s = scales[split_mask]
         split_o = opacities[split_mask]
-        # Per-paper: replace with two copies, each with scale / 1.6
         split_m_2x = split_m.repeat(2, 1)
         split_s_2x = (split_s / 1.6).repeat(2, 1)
         split_o_2x = split_o.repeat(2)
-        # Scale-aware noise (std proportional to original extent)
         noise = torch.randn_like(split_m_2x) * split_s_2x
         parts_m.append(split_m_2x + noise)
         parts_s.append(split_s_2x)
@@ -196,9 +207,6 @@ def densification(means, scales, opacities, grad_accum, count_accum,
 
     # Prune low-opacity Gaussians
     prune_mask = torch.sigmoid(opacities) < prune_opacity_threshold
-    # Screen-size pruning (paper: remove Gaussians with large screen-space radius)
-    if radii is not None and max_screen_size > 0:
-        prune_mask = prune_mask | (radii > max_screen_size)
     means = means[~prune_mask]
     scales = scales[~prune_mask]
     opacities = opacities[~prune_mask]
