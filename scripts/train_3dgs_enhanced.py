@@ -130,18 +130,24 @@ def ssim(img1, img2, window_size=11, sigma=1.5, size_average=True):
 
 # ── Adaptive density control (clone/split/prune) ──────────────────
 @torch.no_grad()
-def densification(means, scales, opacities, grad_accum, count_accum,
+def densification(means, scales, opacities, quats, colors_sh_dc, colors_sh_rest,
+                  grad_accum, count_accum,
                   densify_grad_threshold=0.0002, prune_opacity_threshold=0.005,
                   max_gaussians=0, scene_extent=1.0, percent_dense=0.01,
-                  radii=None, max_screen_size=20):
+                  radii=None, max_screen_size=20, force_split_scale=0.0):
     """
     Clone/split Gaussians with high average screen-space gradient magnitude,
-    prune those with opacity below threshold.
-    Returns updated tensors and reset gradient accumulators.
+    prune those with opacity below threshold or world-space scale > 10% extent.
+    Handles all Gaussian parameters (means, scales, opacities, quats, SH).
+    Returns updated tensors, old_idx (maps new→old indices for state transfer),
+    and reset gradient accumulators.
     """
     n = len(means)
+    old_idx = torch.arange(n, device=means.device)
+
     if max_gaussians > 0 and n >= max_gaussians:
-        return means, scales, opacities, grad_accum, count_accum
+        return means, scales, opacities, quats, colors_sh_dc, colors_sh_rest, \
+               old_idx, grad_accum, count_accum
 
     # Screen-size pruning: remove Gaussians with large screen-space radius
     # Applied BEFORE clone/split while radii still matches tensor sizes
@@ -151,11 +157,16 @@ def densification(means, scales, opacities, grad_accum, count_accum,
         means = means[keep]
         scales = scales[keep]
         opacities = opacities[keep]
+        quats = quats[keep]
+        colors_sh_dc = colors_sh_dc[keep]
+        colors_sh_rest = colors_sh_rest[keep]
         grad_accum = grad_accum[keep]
         count_accum = count_accum[keep]
+        old_idx = old_idx[keep]
         n = len(means)
         if max_gaussians > 0 and n >= max_gaussians:
-            return means, scales, opacities, grad_accum, count_accum
+            return means, scales, opacities, quats, colors_sh_dc, colors_sh_rest, \
+                   old_idx, grad_accum, count_accum
 
     # Average accumulated L2 gradient norm per Gaussian
     grad_avg = grad_accum / count_accum.clamp(min=1)
@@ -166,57 +177,113 @@ def densification(means, scales, opacities, grad_accum, count_accum,
     # Split: high grad, large scale (paper: max(scale) > size_threshold)
     split_mask = (grad_avg >= densify_grad_threshold) & (scales.max(dim=-1).values > size_threshold)
 
+    # Force-split: split Gaussians exceeding max scale regardless of gradient
+    force_split_mask = torch.zeros(n, dtype=torch.bool, device=means.device)
+    if force_split_scale > 0:
+        already_handled = clone_mask | split_mask
+        force_split_mask = (scales.max(dim=-1).values > force_split_scale) & ~already_handled
+
     n_clone = clone_mask.sum().item()
     n_split = split_mask.sum().item()
+    n_force = force_split_mask.sum().item()
 
     keep_mask = torch.ones(n, dtype=torch.bool, device=means.device)
     parts_m = [means]
     parts_s = [scales]
     parts_o = [opacities]
+    parts_q = [quats]
+    parts_dc = [colors_sh_dc]
+    parts_rest = [colors_sh_rest]
+    parts_idx = [old_idx]
 
     if n_clone > 0:
         clone_m = means[clone_mask]
         clone_s = scales[clone_mask]
         clone_o = opacities[clone_mask]
+        clone_q = quats[clone_mask]
+        clone_dc = colors_sh_dc[clone_mask]
+        clone_rest = colors_sh_rest[clone_mask]
         noise = torch.randn_like(clone_m) * 0.001 * scene_extent
         parts_m.append(clone_m + noise)
         parts_s.append(clone_s)
         parts_o.append(clone_o)
+        parts_q.append(clone_q)
+        parts_dc.append(clone_dc)
+        parts_rest.append(clone_rest)
+        parts_idx.append(-torch.ones(n_clone, dtype=torch.long, device=means.device))
 
     if n_split > 0:
         keep_mask[split_mask] = False
         split_m = means[split_mask]
         split_s = scales[split_mask]
         split_o = opacities[split_mask]
-        split_m_2x = split_m.repeat(2, 1)
-        split_s_2x = (split_s / 1.6).repeat(2, 1)
-        split_o_2x = split_o.repeat(2)
-        noise = torch.randn_like(split_m_2x) * split_s_2x
-        parts_m.append(split_m_2x + noise)
-        parts_s.append(split_s_2x)
-        parts_o.append(split_o_2x)
+        split_q = quats[split_mask]
+        split_dc = colors_sh_dc[split_mask]
+        split_rest = colors_sh_rest[split_mask]
+        parts_m.append(split_m.repeat(2, 1))
+        parts_s.append((split_s / 1.6).repeat(2, 1))
+        parts_o.append(split_o.repeat(2))
+        parts_q.append(split_q.repeat(2, 1))
+        parts_dc.append(split_dc.repeat(2, 1, 1))
+        parts_rest.append(split_rest.repeat(2, 1, 1))
+        parts_idx.append(-torch.ones(2 * n_split, dtype=torch.long, device=means.device))
 
-    # Apply keep_mask to the original chunk
+    if n_force > 0:
+        keep_mask[force_split_mask] = False
+        f_m = means[force_split_mask]
+        f_s = scales[force_split_mask]
+        f_o = opacities[force_split_mask]
+        f_q = quats[force_split_mask]
+        f_dc = colors_sh_dc[force_split_mask]
+        f_rest = colors_sh_rest[force_split_mask]
+        parts_m.append(f_m.repeat(2, 1))
+        parts_s.append((f_s / 1.6).repeat(2, 1))
+        parts_o.append(f_o.repeat(2))
+        parts_q.append(f_q.repeat(2, 1))
+        parts_dc.append(f_dc.repeat(2, 1, 1))
+        parts_rest.append(f_rest.repeat(2, 1, 1))
+        parts_idx.append(-torch.ones(2 * n_force, dtype=torch.long, device=means.device))
+
+    # Apply keep_mask to originals
     parts_m[0] = means[keep_mask]
     parts_s[0] = scales[keep_mask]
     parts_o[0] = opacities[keep_mask]
+    parts_q[0] = quats[keep_mask]
+    parts_dc[0] = colors_sh_dc[keep_mask]
+    parts_rest[0] = colors_sh_rest[keep_mask]
+    parts_idx[0] = old_idx[keep_mask]
 
     means = torch.cat(parts_m)
     scales = torch.cat(parts_s)
     opacities = torch.cat(parts_o)
+    quats = torch.cat(parts_q)
+    colors_sh_dc = torch.cat(parts_dc)
+    colors_sh_rest = torch.cat(parts_rest)
+    old_idx = torch.cat(parts_idx)
 
     # Prune low-opacity Gaussians
     prune_mask = torch.sigmoid(opacities) < prune_opacity_threshold
-    means = means[~prune_mask]
-    scales = scales[~prune_mask]
-    opacities = opacities[~prune_mask]
+    # World-space size pruning: remove Gaussians > 10% of scene extent
+    if scene_extent > 0:
+        big_ws = scales.max(dim=-1).values > 0.1 * scene_extent
+        prune_mask = prune_mask | big_ws
+
+    keep_final = ~prune_mask
+    means = means[keep_final]
+    scales = scales[keep_final]
+    opacities = opacities[keep_final]
+    quats = quats[keep_final]
+    colors_sh_dc = colors_sh_dc[keep_final]
+    colors_sh_rest = colors_sh_rest[keep_final]
+    old_idx = old_idx[keep_final]
 
     # Reset gradient accumulators to match new Gaussian count
     n_final = len(means)
     grad_accum = torch.zeros(n_final, device=means.device)
     count_accum = torch.zeros(n_final, device=means.device)
 
-    return means, scales, opacities, grad_accum, count_accum
+    return means, scales, opacities, quats, colors_sh_dc, colors_sh_rest, \
+           old_idx, grad_accum, count_accum
 
 # ── Main training ──────────────────────────────────────────────────
 def train(args):
@@ -465,33 +532,34 @@ def train(args):
                     and it > 0 and it % densify_interval == 0):
                 # Screen-size threshold active only after opacity reset (per paper)
                 size_threshold = 20 if it > opacity_reset_interval else None
-                new_means, new_scales, new_opacities, grad_accum, count_accum = \
-                    densification(
-                        means.data, scales_act.data, opacities.data,
-                        grad_accum, count_accum,
-                        densify_grad_threshold=args.densify_grad_threshold,
-                        prune_opacity_threshold=args.prune_opacity_threshold,
-                        max_gaussians=args.max_gaussians,
-                        scene_extent=scene_extent,
-                        percent_dense=args.percent_dense,
-                        radii=max_radii2D,
-                        max_screen_size=size_threshold or 0,
-                    )
+                result = densification(
+                    means.data, scales_act.data, opacities.data,
+                    quats.data, colors_sh_dc.data, colors_sh_rest.data,
+                    grad_accum, count_accum,
+                    densify_grad_threshold=args.densify_grad_threshold,
+                    prune_opacity_threshold=args.prune_opacity_threshold,
+                    max_gaussians=args.max_gaussians,
+                    scene_extent=scene_extent,
+                    percent_dense=args.percent_dense,
+                    radii=max_radii2D,
+                    max_screen_size=size_threshold or 0,
+                    force_split_scale=args.force_split_scale * scene_extent,
+                )
+                new_means, new_scales, new_opacities, new_quats, \
+                    new_sh_dc, new_sh_rest, old_idx, grad_accum, count_accum = result
 
                 n_new = len(new_means)
                 n_old = len(means)
                 if n_new != n_old:
-                    n_added = max(0, n_new - n_old)
-                    n_trimmed = max(0, n_old - n_new)
-                    quats_new = torch.cat([quats.data, quats.data[:1].repeat(n_added, 1)]) if n_added else quats.data[:n_new] if n_trimmed else quats.data
-                    colors_sh_dc_new = torch.cat([colors_sh_dc.data, torch.zeros(n_added, 1, 3, device=device)]) if n_added else colors_sh_dc.data[:n_new] if n_trimmed else colors_sh_dc.data
-                    colors_sh_rest_new = torch.cat([colors_sh_rest.data, torch.zeros(n_added, n_sh_rest, 3, device=device)]) if n_added else colors_sh_rest.data[:n_new] if n_trimmed else colors_sh_rest.data
+                    # Save old optimizer state before creating new parameters
+                    old_opt_state = optimizer.state_dict()
+
                     means = torch.nn.Parameter(new_means)
-                    quats = torch.nn.Parameter(quats_new)
+                    quats = torch.nn.Parameter(new_quats)
                     scales = torch.nn.Parameter(torch.log(new_scales.clamp(min=1e-7)))
                     opacities = torch.nn.Parameter(new_opacities)
-                    colors_sh_dc = torch.nn.Parameter(colors_sh_dc_new)
-                    colors_sh_rest = torch.nn.Parameter(colors_sh_rest_new)
+                    colors_sh_dc = torch.nn.Parameter(new_sh_dc)
+                    colors_sh_rest = torch.nn.Parameter(new_sh_rest)
 
                     max_radii2D = torch.zeros(n_new, device=device)
 
@@ -504,6 +572,29 @@ def train(args):
                         {'params': [colors_sh_rest], 'lr': args.feature_lr / 20.0, 'name': 'f_rest'},
                     ]
                     optimizer = torch.optim.Adam(params, eps=1e-15)
+
+                    # Preserve Adam state for surviving entries using old_idx mapping
+                    # old_idx[i] = j means new entry i came from old entry j; -1 = new
+                    for old_group, new_group in zip(old_opt_state['param_groups'], optimizer.param_groups):
+                        name = new_group['name']
+                        new_p = new_group['params'][0]
+                        old_pid = old_group['params'][0]
+                        if old_pid in old_opt_state['state']:
+                            old_p_state = old_opt_state['state'][old_pid]
+                            new_p_state = {}
+                            if 'step' in old_p_state:
+                                new_p_state['step'] = old_p_state['step']
+                            for key in ['exp_avg', 'exp_avg_sq']:
+                                if key in old_p_state:
+                                    old_val = old_p_state[key]
+                                    new_val = torch.zeros(
+                                        n_new, *old_val.shape[1:],
+                                        device=old_val.device, dtype=old_val.dtype,
+                                    )
+                                    mask = old_idx >= 0
+                                    new_val[mask] = old_val[old_idx[mask]]
+                                    new_p_state[key] = new_val
+                            optimizer.state[new_p] = new_p_state
 
             # Opacity reset (every opacity_reset_interval, independent of densification)
             if (it < densify_until_iter and it > 0
@@ -630,6 +721,8 @@ if __name__ == "__main__":
                         help="Opacity learning rate (paper: 0.025)")
     parser.add_argument("--percent-dense", type=float, default=0.01,
                         help="Percentage of scene extent for clone/split threshold (paper: 0.01)")
+    parser.add_argument("--force-split-scale", type=float, default=0.02,
+                        help="Frac of scene extent; force-split Gaussians exceeding this scale regardless of gradient (0=disable)")
     parser.add_argument("--scaling-lr", type=float, default=0.005,
                         help="Scaling learning rate")
     parser.add_argument("--rotation-lr", type=float, default=0.001,
