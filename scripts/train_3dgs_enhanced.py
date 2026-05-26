@@ -213,16 +213,19 @@ def train(args):
     print(f"Using device: {device}")
 
     input_dir = Path(args.input_dir)
-    sparse_dir = input_dir / "sparse" / "0"
-    if not sparse_dir.exists():
-        sparse_dir = input_dir / "sparse" / "0" / "txt"
-    if not sparse_dir.exists():
-        for p in [BASE / "colmap_data", BASE / "colmap_workspace" / "sparse_registered",
-                  BASE / "colmap_workspace" / "optimized_model"]:
-            if p.exists():
-                sparse_dir = p / "txt" if (p / "txt").exists() else p
-                if sparse_dir.exists():
-                    break
+    if hasattr(args, 'sparse_dir') and args.sparse_dir:
+        sparse_dir = Path(args.sparse_dir)
+    else:
+        sparse_dir = input_dir / "sparse" / "0"
+        if not sparse_dir.exists():
+            sparse_dir = input_dir / "sparse" / "0" / "txt"
+        if not sparse_dir.exists():
+            for p in [BASE / "colmap_data", BASE / "colmap_workspace" / "sparse_registered",
+                      BASE / "colmap_workspace" / "optimized_model"]:
+                if p.exists():
+                    sparse_dir = p / "txt" if (p / "txt").exists() else p
+                    if sparse_dir.exists():
+                        break
 
     images_dir = input_dir / "images"
     if not images_dir.exists():
@@ -559,6 +562,8 @@ if __name__ == "__main__":
     # Data
     parser.add_argument("--input-dir", "-i", default=str(BASE / "gaussian-splatting" / "input"),
                         help="Input directory with images/ and sparse/0/")
+    parser.add_argument("--sparse-dir", default=None,
+                        help="Explicit sparse directory (overrides input_dir/sparse/0)")
     parser.add_argument("--output-dir", "-o", default=str(BASE / "output"),
                         help="Output directory for PLY files")
     parser.add_argument("--max-res", type=int, default=1600,

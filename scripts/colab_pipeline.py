@@ -369,6 +369,7 @@ def train_3dgs(
     output_name="arena_3dgs",
     *,
     input_dir="/content/gaussian-splatting/input",
+    sparse_dir=None,
     output_base="/content/gaussian-splatting/output",
     random_background=False,
     opacity_reset_interval=3000,
@@ -393,6 +394,7 @@ def train_3dgs(
     os.makedirs(output_dir, exist_ok=True)
     args = Namespace(
         input_dir=input_dir,
+        sparse_dir=sparse_dir,
         output_dir=output_dir,
         iterations=iterations,
         max_gaussians=max_gaussians,
