@@ -146,3 +146,21 @@ def check_coverage(sparse_dir, ply_path, images_dir, max_res=1600, max_views=Non
         print(f"  [{img_id:3d}] {name:30s}  {n_visible:4d}/{len(pts_3d):4d} pts ({pct:3.0f}%)  → {out_path}")
 
     print(f"\nDone! {len(sorted_ids)} views → {out_dir}/")
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Visualize COLMAP point coverage per camera view")
+    parser.add_argument("--sparse-dir", required=True, help="Path to COLMAP sparse/0 dir (cameras.txt, images.txt)")
+    parser.add_argument("--ply", required=True, help="Path to init PLY file (arena_3dgs_init.ply)")
+    parser.add_argument("--images-dir", required=True, help="Path to images directory")
+    parser.add_argument("--max-res", type=int, default=1600, help="Downscale images to this max side length")
+    parser.add_argument("--max-views", type=int, default=None, help="Only process first N views")
+    args = parser.parse_args()
+    check_coverage(
+        sparse_dir=args.sparse_dir,
+        ply_path=args.ply,
+        images_dir=args.images_dir,
+        max_res=args.max_res,
+        max_views=args.max_views,
+    )
