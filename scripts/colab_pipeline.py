@@ -51,12 +51,13 @@ def install_dependencies(
             Path(deps_marker).touch()
         print("\nSystem deps installed!")
 
-    # Always download latest training script, regardless of marker
-    print("Downloading latest enhanced training script from GitHub...")
-    enhanced = os.path.join(scripts_dir, "train_3dgs_enhanced.py")
+    # Always download latest training scripts, regardless of marker
     os.makedirs(scripts_dir, exist_ok=True)
-    urllib.request.urlretrieve(f"{repo_url}/scripts/train_3dgs_enhanced.py", enhanced)
-    print("  Done.")
+    for script_name in ["train_3dgs_enhanced.py", "visualize_coverage.py"]:
+        print(f"Downloading {script_name} from GitHub...")
+        urllib.request.urlretrieve(f"{repo_url}/scripts/{script_name}",
+                                   os.path.join(scripts_dir, script_name))
+        print("  Done.")
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
 
