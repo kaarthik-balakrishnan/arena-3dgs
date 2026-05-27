@@ -128,11 +128,20 @@ def ssim(img1, img2, window_size=11, sigma=1.5, size_average=True):
     ssim_map = ((2 * mu1_mu2 + C1) * (2 * sigma12 + C2)) / ((mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2))
     return ssim_map.mean() if size_average else ssim_map.mean(dim=(1, 2, 3))
 
+def quat_to_rotmat(q):
+    """Convert quaternion (w,x,y,z) to 3x3 rotation matrix (batched)."""
+    w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+    return torch.stack([
+        torch.stack([1 - 2*y*y - 2*z*z, 2*x*y - 2*w*z, 2*x*z + 2*w*y], dim=-1),
+        torch.stack([2*x*y + 2*w*z, 1 - 2*x*x - 2*z*z, 2*y*z - 2*w*x], dim=-1),
+        torch.stack([2*x*z - 2*w*y, 2*y*z + 2*w*x, 1 - 2*x*x - 2*y*y], dim=-1),
+    ], dim=-2)
+
 # ── Adaptive density control (clone/split/prune) ──────────────────
 @torch.no_grad()
 def densification(means, scales, opacities, quats, colors_sh_dc, colors_sh_rest,
                   grad_accum, count_accum,
-                   densify_grad_threshold=0.0002, prune_opacity_threshold=0.01,
+                   densify_grad_threshold=0.0002, prune_opacity_threshold=0.005,
                   max_gaussians=0, scene_extent=1.0, percent_dense=0.01,
                   radii=None, max_screen_size=20, force_split_scale=0.0):
     """
@@ -212,37 +221,38 @@ def densification(means, scales, opacities, quats, colors_sh_dc, colors_sh_rest,
         parts_rest.append(clone_rest)
         parts_idx.append(-torch.ones(n_clone, dtype=torch.long, device=means.device))
 
+    def _split_gaussians(mask, label=""):
+        """Split Gaussians matching `mask`: create 2 children displaced along orientation."""
+        n_sel = mask.sum().item()
+        if n_sel == 0:
+            return
+        nonlocal keep_mask
+        keep_mask[mask] = False
+        sel_m = means[mask]
+        sel_s = scales[mask]
+        sel_o = opacities[mask]
+        sel_q = quats[mask]
+        sel_dc = colors_sh_dc[mask]
+        sel_rest = colors_sh_rest[mask]
+        # Sample displacement from N(0, scale) rotated by parent orientation
+        stds = sel_s.repeat(2, 1)
+        samples = torch.randn_like(stds) * stds
+        rots = quat_to_rotmat(sel_q).repeat(2, 1, 1)
+        displacement = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1)
+        new_m = sel_m.repeat(2, 1) + displacement
+        parts_m.append(new_m)
+        parts_s.append((sel_s / 1.6).repeat(2, 1))
+        parts_o.append(sel_o.repeat(2))
+        parts_q.append(sel_q.repeat(2, 1))
+        parts_dc.append(sel_dc.repeat(2, 1, 1))
+        parts_rest.append(sel_rest.repeat(2, 1, 1))
+        parts_idx.append(-torch.ones(2 * n_sel, dtype=torch.long, device=means.device))
+
     if n_split > 0:
-        keep_mask[split_mask] = False
-        split_m = means[split_mask]
-        split_s = scales[split_mask]
-        split_o = opacities[split_mask]
-        split_q = quats[split_mask]
-        split_dc = colors_sh_dc[split_mask]
-        split_rest = colors_sh_rest[split_mask]
-        parts_m.append(split_m.repeat(2, 1))
-        parts_s.append((split_s / 1.6).repeat(2, 1))
-        parts_o.append(split_o.repeat(2))
-        parts_q.append(split_q.repeat(2, 1))
-        parts_dc.append(split_dc.repeat(2, 1, 1))
-        parts_rest.append(split_rest.repeat(2, 1, 1))
-        parts_idx.append(-torch.ones(2 * n_split, dtype=torch.long, device=means.device))
+        _split_gaussians(split_mask, "split")
 
     if n_force > 0:
-        keep_mask[force_split_mask] = False
-        f_m = means[force_split_mask]
-        f_s = scales[force_split_mask]
-        f_o = opacities[force_split_mask]
-        f_q = quats[force_split_mask]
-        f_dc = colors_sh_dc[force_split_mask]
-        f_rest = colors_sh_rest[force_split_mask]
-        parts_m.append(f_m.repeat(2, 1))
-        parts_s.append((f_s / 1.6).repeat(2, 1))
-        parts_o.append(f_o.repeat(2))
-        parts_q.append(f_q.repeat(2, 1))
-        parts_dc.append(f_dc.repeat(2, 1, 1))
-        parts_rest.append(f_rest.repeat(2, 1, 1))
-        parts_idx.append(-torch.ones(2 * n_force, dtype=torch.long, device=means.device))
+        _split_gaussians(force_split_mask, "force-split")
 
     # Apply keep_mask to originals
     parts_m[0] = means[keep_mask]
@@ -425,7 +435,11 @@ def train(args):
     colors_sh_dc = torch.nn.Parameter(((colors_init - 0.5) / C0).unsqueeze(1))
     colors_sh_rest = torch.nn.Parameter(torch.zeros(n_points, n_sh_rest, 3, dtype=torch.float32, device=device))
 
-    scene_extent = means.data.norm(dim=-1).max().item()
+    # Scene extent from camera positions (official method), NOT from Gaussian positions
+    cam_centers = viewmats[:, :3, 3]
+    cam_center_mean = cam_centers.mean(dim=0)
+    cam_dists = torch.norm(cam_centers - cam_center_mean, dim=-1)
+    scene_extent = (cam_dists.max().item() * 1.1)
     spatial_lr_scale = scene_extent
 
     params = [
@@ -470,12 +484,19 @@ def train(args):
                torch.sigmoid(opacities.data), colors_sh_flat_init,
                output_dir / "arena_3dgs_init.ply")
 
-    # Position LR scheduler (exponential decay, per paper, scaled by spatial_lr_scale)
+    # Position LR scheduler with delay multiplier (official 3DGS behavior)
+    position_lr_delay_mult = getattr(args, 'position_lr_delay_mult', 0.01)
+    position_lr_delay_steps = getattr(args, 'position_lr_delay_steps', 0)
     def get_xyz_lr(iteration, lr_init=args.position_lr_init * spatial_lr_scale,
                    lr_final=args.position_lr_final * spatial_lr_scale,
                    max_steps=args.position_lr_max_steps):
+        if position_lr_delay_steps > 0:
+            t_iter = iteration / position_lr_delay_steps
+            delay = position_lr_delay_mult + (1.0 - position_lr_delay_mult) * np.sin(0.5 * np.pi * np.clip(t_iter, 0, 1))
+        else:
+            delay = 1.0
         t = min(iteration, max_steps) / max_steps
-        return lr_init * (lr_final / lr_init) ** t
+        return delay * lr_init * (lr_final / lr_init) ** t
 
     imgs_gt = torch.tensor(np.stack(valid_imgs) / 255.0, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
 
@@ -764,14 +785,14 @@ if __name__ == "__main__":
     # Densification (matches paper defaults)
     parser.add_argument("--densify-from-iter", type=int, default=500,
                         help="Iteration to start densification")
-    parser.add_argument("--densify-until-iter", type=int, default=10000,
-                        help="Iteration to stop densification")
+    parser.add_argument("--densify-until-iter", type=int, default=15000,
+                        help="Iteration to stop densification (paper: 15000)")
     parser.add_argument("--densify-interval", type=int, default=100,
                         help="Densify every N iterations")
     parser.add_argument("--densify-grad-threshold", type=float, default=0.0002,
                         help="Gradient threshold for clone/split")
-    parser.add_argument("--prune-opacity-threshold", type=float, default=0.01,
-                        help="Opacity threshold for pruning")
+    parser.add_argument("--prune-opacity-threshold", type=float, default=0.005,
+                        help="Opacity threshold for pruning (paper: 0.005)")
     parser.add_argument("--opacity-reset-interval", type=int, default=3000,
                         help="Reset opacity every N iterations (paper: 3000)")
     parser.add_argument("--max-gaussians", type=int, default=0,
@@ -784,10 +805,14 @@ if __name__ == "__main__":
                         help="Final position learning rate")
     parser.add_argument("--position-lr-max-steps", type=int, default=30000,
                         help="Steps for position LR decay")
+    parser.add_argument("--position-lr-delay-mult", type=float, default=0.01,
+                        help="Position LR delay multiplier (paper: 0.01, start LR at 1% of init)")
+    parser.add_argument("--position-lr-delay-steps", type=int, default=500,
+                        help="Iterations over which position LR ramps up (paper: matches densify_from_iter)")
     parser.add_argument("--feature-lr", type=float, default=0.0025,
                         help="Feature/SH learning rate")
-    parser.add_argument("--opacity-lr", type=float, default=0.025,
-                        help="Opacity learning rate (paper: 0.025)")
+    parser.add_argument("--opacity-lr", type=float, default=0.05,
+                        help="Opacity learning rate (paper: 0.05)")
     parser.add_argument("--percent-dense", type=float, default=0.01,
                         help="Percentage of scene extent for clone/split threshold (paper: 0.01)")
     parser.add_argument("--force-split-scale", type=float, default=0.02,

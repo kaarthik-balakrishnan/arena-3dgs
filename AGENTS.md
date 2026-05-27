@@ -43,10 +43,10 @@ Branch: `main`
 | `max_res` | 800 | Max image side in px (downscaled before training) |
 | `iterations` | 30000 | Total training iterations |
 | `densify_from_iter` | 500 | Start densification |
-| `densify_until_iter` | 10000 | Stop densification |
+| `densify_until_iter` | 15000 | Stop densification (paper: 15000) |
 | `densify_interval` | 100 | Densify every N iterations |
 | `densify_grad_threshold` | 0.0002 | Gradient norm threshold for clone/split |
-| `prune_opacity_threshold` | 0.01 | Remove Gaussians with sigmoid(opacity) below this |
+| `prune_opacity_threshold` | 0.005 | Remove Gaussians with sigmoid(opacity) below this (paper: 0.005) |
 | `opacity_reset_interval` | 3000 | Reset opacities every N iters (paper: 3000) |
 | `max_gaussians` | 0 (unlimited) | Hard cap (set 250000–350000 for T4 OOM safety) |
 | `force_split_scale` | 0.02 × scene_extent | Force-split Gaussians exceeding this size |
@@ -55,8 +55,10 @@ Branch: `main`
 | `random_background` | False | Random BG color per iter (regularization) |
 | `position_lr_init` | 0.00016 | Initial position learning rate |
 | `position_lr_final` | 0.0000016 | Final position learning rate |
+| `position_lr_delay_mult` | 0.01 | Position LR delay multiplier (ramp up from 1% over 500 iters) |
+| `position_lr_delay_steps` | 500 | Iterations for position LR warmup |
 | `feature_lr` | 0.0025 | SH feature learning rate |
-| `opacity_lr` | 0.025 | Opacity learning rate |
+| `opacity_lr` | 0.05 | Opacity learning rate (paper: 0.05) |
 | `scaling_lr` | 0.005 | Scale learning rate |
 | `rotation_lr` | 0.001 | Rotation learning rate |
 | `lambda_dssim` | 0.2 | SSIM loss weight (1-λ) * L1 + λ * (1-SSIM) |
@@ -75,6 +77,27 @@ Branch: `main`
 
 See `docs/bugs-fixed.md` for details.
 
+## Training Quality Issues Fixed (2026-05-27)
+
+After analyzing `BrushTest_3dgs.ply` (362K Gaussians, 85.8 MB) against the official implementation and supersplat.ai examples, 8 root causes for quality degradation were identified and fixed:
+
+### Critical fixes applied to `train_3dgs_enhanced.py` and `colab_pipeline.py`:
+
+| # | Issue | Old | New | Official |
+|---|-------|-----|-----|---------|
+| 1 | `densify_until_iter` | 10000 | 15000 | 15000 |
+| 2 | `prune_opacity_threshold` | 0.01 | 0.005 | 0.005 |
+| 3 | `opacity_lr` | 0.025 | 0.05 | 0.05 |
+| 4 | `position_lr_delay_mult` | missing (no warmup) | 0.01 with 500 step sin-ramp | 0.01 |
+| 5 | Split displacement | both children at same position | Sampled along orientation from N(0, scale) | Same |
+| 6 | Scene extent source | Gaussian positions | Camera positions ×1.1 | Camera positions ×1.1 |
+
+### Medium priority (not yet applied):
+- Switch gradient tracking from world-space to screen-space (viewspace) — requires gsplat API support
+- Position LR delay steps tracking after densification rebuild (minor)
+
+See `docs/diagnosis.md` for the full analysis with PLY metrics, root cause details, and the pathology (balloon Gaussians with scale up to 1841 in a 50-unit scene, 18% dead Gaussians with opacity < 0.01).
+
 ## Latest Training Run Results
 
 **Config:** 30K iters, max_gaussians=250000, max_res=800, densify_until_iter=10000, prune_opacity_threshold=0.01
@@ -84,18 +107,21 @@ Gaussians: hit cap at ~254,456 (bouncing off 250K limit)
 Loss: range 0.05–0.73, final 0.73 (not converged)
 ```
 
-**Analysis:** The Gaussian cap is the bottleneck. Training flatlined at 254K for the last 10K iterations — the model needs more capacity to represent 29 views. Next step is raising `max_gaussians` to 300K or 350K.
+**Analysis from BrushTest PLY (362K Gaussians, no cap):** 18% of Gaussians have opacity < 0.01 (dead), 48 Gaussians have scale > 100 (max 1841 in a 50-unit scene). The model wastes capacity on balloon Gaussians and dead splats.
 
-### Memory usage observed
-- At 254K Gaussians, 900×1600 images → 10.8 GiB allocated out of 14.56 GiB on Colab T4
-- `max_res=800` reduces to 450×800 → ~4× fewer pixels → should free ~2-4 GiB
-- With freed memory, 300K–350K Gaussians should fit
+### Root causes fixed (2026-05-27)
+1. **`densify_until_iter`** 10000 → 15000 — densification ran only 10K of 30K iters
+2. **`prune_opacity_threshold`** 0.01 → 0.005 — was killing useful Gaussians
+3. **`opacity_lr`** 0.025 → 0.05 — opacities couldn't recover after reset
+4. **Position LR delay** — missing warmup caused early overshoot
+5. **Split displacement** — children spawned at same spot, now displaced along orientation
+6. **Scene extent** — was from Gaussian positions (inflated by outliers), now from camera positions
 
 ## Key Implementation Details
 
 ### `densification()` — clone/split/prune logic
 - **Clone:** high gradient + small scale → make a copy with noise
-- **Split:** high gradient + large scale → replace with 2 smaller copies (scale / 1.6)
+- **Split:** high gradient + large scale → replace with 2 smaller copies (scale / 1.6), displaced along parent orientation using N(0, scale) sampling
 - **Force-split:** any Gaussian > `force_split_scale * scene_extent` regardless of gradient
 - **Prune:** remove low opacity (< `prune_opacity_threshold`) or too large (> 0.1 × scene_extent) or too large in screen space (> `max_screen_size` pixels)
 - Returns `old_idx` mapping new→old for optimizer state transfer
@@ -128,19 +154,16 @@ After densification changes Gaussian count:
 
 ### Immediate
 - [ ] **Raise `max_gaussians`** to 300000 or 350000 and re-run 30K training
-- [ ] **Raise `densify_until_iter`** back toward 15000 (more time for the model to grow)
-- [ ] Compare loss curves — does the model stay below 0.1 consistently?
+- [ ] **Compare loss curves** — does the model stay below 0.1 consistently?
 
 ### If quality still poor
 - [ ] Run coverage visualization on init PLY — which views have <10% coverage?
 - [ ] Try `random_background=True` (regularization against dark-region cheating)
 - [ ] Increase `position_lr_init` / `position_lr_final` (Gaussians may not move enough)
-- [ ] Reduce `prune_opacity_threshold` back to 0.005 (less aggressive pruning)
 
 ### If OOM persists
 - [ ] Lower `max_res` further (600 or even 500)
 - [ ] Reduce `max_gaussians` further
-- [ ] Reduce `feature_lr` (smaller SH updates = less wild variation)
 - [ ] Profile with `torch.cuda.memory_summary()` to find the specific bottleneck
 
 ### If training too slow
