@@ -59,9 +59,12 @@ def qvec2rotmat(qvec):
     ])
 
 
-def check_coverage(sparse_dir, ply_path, images_dir, max_res=800, max_views=None):
+def check_coverage(sparse_dir, ply_path, images_dir, max_res=800, max_views=None, output_dir=None):
     sparse_dir = Path(sparse_dir)
     images_dir = Path(images_dir)
+    if output_dir is None:
+        output_dir = Path.cwd() / "coverage_views"
+    out_dir = Path(output_dir)
 
     cams = read_cameras_text(sparse_dir / "cameras.txt")
     imgs_data = read_images_text(sparse_dir / "images.txt")
@@ -93,7 +96,6 @@ def check_coverage(sparse_dir, ply_path, images_dir, max_res=800, max_views=None
     if max_views:
         sorted_ids = sorted_ids[:max_views]
 
-    out_dir = Path("/content/coverage_views")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for img_id in sorted_ids:
@@ -156,6 +158,7 @@ if __name__ == "__main__":
     parser.add_argument("--images-dir", required=True, help="Path to images directory")
     parser.add_argument("--max-res", type=int, default=800, help="Downscale images to this max side length")
     parser.add_argument("--max-views", type=int, default=None, help="Only process first N views")
+    parser.add_argument("--output-dir", default=None, help="Output directory for coverage images (default: ./coverage_views)")
     args = parser.parse_args()
     check_coverage(
         sparse_dir=args.sparse_dir,
@@ -163,4 +166,5 @@ if __name__ == "__main__":
         images_dir=args.images_dir,
         max_res=args.max_res,
         max_views=args.max_views,
+        output_dir=args.output_dir,
     )
