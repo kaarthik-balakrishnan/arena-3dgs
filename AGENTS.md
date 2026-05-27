@@ -93,7 +93,7 @@ After analyzing `BrushTest_3dgs.ply` (362K Gaussians, 85.8 MB) against the offic
 | 6 | Scene extent source | Gaussian positions | Camera positions ×1.1 | Camera positions ×1.1 |
 
 ### Medium priority (not yet applied):
-- Switch gradient tracking from world-space to screen-space (viewspace) — requires gsplat API support
+- Switch gradient tracking from world-space to screen-space (viewspace) — gsplat supports `info["means2d"].absgrad` with `absgrad=True`
 - Position LR delay steps tracking after densification rebuild (minor)
 
 See `docs/diagnosis.md` for the full analysis with PLY metrics, root cause details, and the pathology (balloon Gaussians with scale up to 1841 in a 50-unit scene, 18% dead Gaussians with opacity < 0.01).

@@ -100,4 +100,8 @@ These models typically have **1-6 million Gaussians** with <5% dead weight, prop
 4. [x] Add `position_lr_delay_mult=0.01` with warmup
 5. [x] Fix split to displace children along orientation
 6. [x] Fix scene_extent to use camera positions
-7. [ ] Switch to screen-space gradient (if gsplat supports it)
+7. [x] Switch to screen-space gradient (gsplat supports via `info["means2d"].absgrad` with `absgrad=True`)
+   - No custom CUDA needed. Add `absgrad=True` to `gs_rasterization()` call
+   - After backward, read `info["means2d"].absgrad`, normalize by `width/2 * n_cameras` and `height/2 * n_cameras`
+   - Map sparse nnz results to full N using `info["gaussian_ids"]` with scatter_add
+   - Replace `means.grad.norm(dim=-1)` with the normalized screen-space gradient norm
