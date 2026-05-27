@@ -59,7 +59,7 @@ def qvec2rotmat(qvec):
     ])
 
 
-def check_coverage(sparse_dir, ply_path, images_dir, max_res=1600, max_views=None):
+def check_coverage(sparse_dir, ply_path, images_dir, max_res=800, max_views=None):
     sparse_dir = Path(sparse_dir)
     images_dir = Path(images_dir)
 
@@ -154,7 +154,7 @@ if __name__ == "__main__":
     parser.add_argument("--sparse-dir", required=True, help="Path to COLMAP sparse/0 dir (cameras.txt, images.txt)")
     parser.add_argument("--ply", required=True, help="Path to init PLY file (arena_3dgs_init.ply)")
     parser.add_argument("--images-dir", required=True, help="Path to images directory")
-    parser.add_argument("--max-res", type=int, default=1600, help="Downscale images to this max side length")
+    parser.add_argument("--max-res", type=int, default=800, help="Downscale images to this max side length")
     parser.add_argument("--max-views", type=int, default=None, help="Only process first N views")
     args = parser.parse_args()
     check_coverage(

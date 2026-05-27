@@ -132,7 +132,7 @@ def ssim(img1, img2, window_size=11, sigma=1.5, size_average=True):
 @torch.no_grad()
 def densification(means, scales, opacities, quats, colors_sh_dc, colors_sh_rest,
                   grad_accum, count_accum,
-                  densify_grad_threshold=0.0002, prune_opacity_threshold=0.005,
+                   densify_grad_threshold=0.0002, prune_opacity_threshold=0.01,
                   max_gaussians=0, scene_extent=1.0, percent_dense=0.01,
                   radii=None, max_screen_size=20, force_split_scale=0.0):
     """
@@ -354,7 +354,7 @@ def train(args):
     print(f"  Loaded {n_views} training views")
 
     img_h, img_w = valid_imgs[0].shape[:2]
-    max_res = getattr(args, 'max_res', 1600)
+    max_res = getattr(args, 'max_res', 800)
     scale = min(max_res / max(img_h, img_w), 1.0)
     if scale < 1.0:
         new_w = round(img_w * scale)
@@ -750,7 +750,7 @@ if __name__ == "__main__":
                         help="Explicit sparse directory (overrides input_dir/sparse/0)")
     parser.add_argument("--output-dir", "-o", default=str(BASE / "output"),
                         help="Output directory for PLY files")
-    parser.add_argument("--max-res", type=int, default=1600,
+    parser.add_argument("--max-res", type=int, default=800,
                         help="Maximum image resolution (longest side)")
     parser.add_argument("--max-init-points", type=int, default=50000,
                         help="Max COLMAP points to initialize from")
@@ -764,13 +764,13 @@ if __name__ == "__main__":
     # Densification (matches paper defaults)
     parser.add_argument("--densify-from-iter", type=int, default=500,
                         help="Iteration to start densification")
-    parser.add_argument("--densify-until-iter", type=int, default=15000,
+    parser.add_argument("--densify-until-iter", type=int, default=10000,
                         help="Iteration to stop densification")
     parser.add_argument("--densify-interval", type=int, default=100,
                         help="Densify every N iterations")
     parser.add_argument("--densify-grad-threshold", type=float, default=0.0002,
                         help="Gradient threshold for clone/split")
-    parser.add_argument("--prune-opacity-threshold", type=float, default=0.005,
+    parser.add_argument("--prune-opacity-threshold", type=float, default=0.01,
                         help="Opacity threshold for pruning")
     parser.add_argument("--opacity-reset-interval", type=int, default=3000,
                         help="Reset opacity every N iterations (paper: 3000)")
