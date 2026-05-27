@@ -420,6 +420,7 @@ def train(args):
     scales = torch.nn.Parameter(scales)
     opacities = torch.nn.Parameter(torch.log(opacities / (1 - opacities + 1e-10)))
     max_sh_degree = args.sh_degree
+    active_sh_degree = 0
     n_sh_rest = (max_sh_degree + 1) ** 2 - 1
     colors_sh_dc = ((colors_init - 0.5) / C0).unsqueeze(1)
     colors_sh_rest = torch.zeros(n_points, n_sh_rest, 3, dtype=torch.float32, device=device)
@@ -475,8 +476,6 @@ def train(args):
                    max_steps=args.position_lr_max_steps):
         t = min(iteration, max_steps) / max_steps
         return lr_init * (lr_final / lr_init) ** t
-
-    active_sh_degree = 0
 
     imgs_gt = torch.tensor(np.stack(valid_imgs) / 255.0, dtype=torch.float32, device=device).permute(0, 3, 1, 2)
 
