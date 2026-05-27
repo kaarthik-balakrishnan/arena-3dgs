@@ -422,8 +422,8 @@ def train(args):
     max_sh_degree = args.sh_degree
     active_sh_degree = 0
     n_sh_rest = (max_sh_degree + 1) ** 2 - 1
-    colors_sh_dc = ((colors_init - 0.5) / C0).unsqueeze(1)
-    colors_sh_rest = torch.zeros(n_points, n_sh_rest, 3, dtype=torch.float32, device=device)
+    colors_sh_dc = torch.nn.Parameter(((colors_init - 0.5) / C0).unsqueeze(1))
+    colors_sh_rest = torch.nn.Parameter(torch.zeros(n_points, n_sh_rest, 3, dtype=torch.float32, device=device))
 
     scene_extent = means.data.norm(dim=-1).max().item()
     spatial_lr_scale = scene_extent
