@@ -33,29 +33,28 @@ def install_dependencies(
 
     if deps_marker and os.path.exists(deps_marker) and colmap_available():
         print("Dependencies already installed (Drive marker found).")
-        ensure_virtual_display()
-        return
-
-    print("[1/4] Installing COLMAP + display deps...")
-    os.system("apt-get update -qq && apt-get install -y -qq colmap xvfb libgl1-mesa-glx libglib2.0-0")
-    os.system("colmap version 2>&1 | head -1")
-    print("[2/4] Installing PyTorch...")
-    os.system("pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu118 -q")
-    import torch
-    if torch.cuda.is_available():
-        print(f"  PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}, VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
     else:
-        print(f"  PyTorch {torch.__version__}, CUDA: False")
-    print("[3/4] Installing Python packages...")
-    os.system("pip install plyfile numpy pillow opencv-python-headless tqdm gsplat scipy -q")
-    print("[4/4] Verifying GPU...")
-    if deps_marker:
-        Path(deps_marker).touch()
-    print("\nSystem deps installed!")
+        print("[1/4] Installing COLMAP + display deps...")
+        os.system("apt-get update -qq && apt-get install -y -qq colmap xvfb libgl1-mesa-glx libglib2.0-0")
+        os.system("colmap version 2>&1 | head -1")
+        print("[2/4] Installing PyTorch...")
+        os.system("pip install torch==2.1.0 torchvision==0.16.0 --index-url https://download.pytorch.org/whl/cu118 -q")
+        import torch
+        if torch.cuda.is_available():
+            print(f"  PyTorch {torch.__version__}, CUDA: {torch.cuda.is_available()}, VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f}GB")
+        else:
+            print(f"  PyTorch {torch.__version__}, CUDA: False")
+        print("[3/4] Installing Python packages...")
+        os.system("pip install plyfile numpy pillow opencv-python-headless tqdm gsplat scipy -q")
+        print("[4/4] Verifying GPU...")
+        if deps_marker:
+            Path(deps_marker).touch()
+        print("\nSystem deps installed!")
 
+    # Always download latest training script, regardless of marker
+    print("Downloading latest enhanced training script from GitHub...")
     enhanced = os.path.join(scripts_dir, "train_3dgs_enhanced.py")
     os.makedirs(scripts_dir, exist_ok=True)
-    print("Downloading latest enhanced training script from GitHub...")
     urllib.request.urlretrieve(f"{repo_url}/scripts/train_3dgs_enhanced.py", enhanced)
     print("  Done.")
     if scripts_dir not in sys.path:
