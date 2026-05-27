@@ -153,7 +153,8 @@ After densification changes Gaussian count:
 ## Next Steps
 
 ### Immediate
-- [ ] **Raise `max_gaussians`** to 300000 or 350000 and re-run 30K training
+- [x] **Raise `max_gaussians`** to 350000 and `densify_until_iter` to 15000 in notebook Cell 7B
+- [ ] **Re-run 30K training on Colab** — Cell 7B now picks up all fixed defaults
 - [ ] **Compare loss curves** — does the model stay below 0.1 consistently?
 
 ### If quality still poor
