@@ -437,6 +437,38 @@ def train(args):
     ]
     optimizer = torch.optim.Adam(params, eps=1e-15)
 
+    # Save init checkpoint
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    init_ckpt = {
+        'iteration': 0,
+        'means': means.data.cpu(),
+        'quats': quats.data.cpu(),
+        'scales': scales.data.cpu(),
+        'opacities': opacities.data.cpu(),
+        'colors_sh_dc': colors_sh_dc.data.cpu(),
+        'colors_sh_rest': colors_sh_rest.data.cpu(),
+        'max_sh_degree': max_sh_degree,
+        'active_sh_degree': active_sh_degree,
+        'scene_extent': scene_extent,
+        'spatial_lr_scale': spatial_lr_scale,
+        'optimizer_state': optimizer.state_dict(),
+    }
+    torch.save(init_ckpt, output_dir / "checkpoint_init.pt")
+    print(f"  Saved init checkpoint ({n_points} gaussians)")
+
+    # Also export init PLY for visual inspection
+    colors_sh_flat_init = torch.cat([colors_sh_dc.data.flatten(start_dim=1),
+                                     colors_sh_rest.data.flatten(start_dim=1)], dim=-1)
+    n_sh_full = 48
+    if colors_sh_flat_init.shape[-1] < n_sh_full:
+        pad = torch.zeros(len(colors_sh_flat_init), n_sh_full - colors_sh_flat_init.shape[-1],
+                          device=colors_sh_flat_init.device)
+        colors_sh_flat_init = torch.cat([colors_sh_flat_init, pad], dim=-1)
+    export_ply(means.data, quats.data, torch.exp(scales.data),
+               torch.sigmoid(opacities.data), colors_sh_flat_init,
+               output_dir / "arena_3dgs_init.ply")
+
     # Position LR scheduler (exponential decay, per paper, scaled by spatial_lr_scale)
     def get_xyz_lr(iteration, lr_init=args.position_lr_init * spatial_lr_scale,
                    lr_final=args.position_lr_final * spatial_lr_scale,
@@ -466,6 +498,7 @@ def train(args):
     print(f"  Logging every {args.log_interval} iters, densify every {densify_interval}")
 
     ema_loss = 0.0
+    good_model_saved = False
 
     pbar = trange(n_iterations, desc="3DGS Training", unit="iter")
     for it in pbar:
@@ -512,6 +545,37 @@ def train(args):
         L1 = F.l1_loss(renders, gt)
         ssim_val = ssim(renders, gt)
         loss = (1.0 - args.lambda_dssim) * L1 + args.lambda_dssim * (1.0 - ssim_val)
+
+        # Save first model below error threshold
+        if loss.item() < 0.1 and not good_model_saved:
+            good_ckpt = {
+                'iteration': it + 1,
+                'means': means.data.cpu(),
+                'quats': quats.data.cpu(),
+                'scales': scales.data.cpu(),
+                'opacities': opacities.data.cpu(),
+                'colors_sh_dc': colors_sh_dc.data.cpu(),
+                'colors_sh_rest': colors_sh_rest.data.cpu(),
+                'active_sh_degree': active_sh_degree,
+                'max_sh_degree': max_sh_degree,
+                'scene_extent': scene_extent,
+                'spatial_lr_scale': spatial_lr_scale,
+                'optimizer_state': optimizer.state_dict(),
+                'loss': loss.item(),
+            }
+            torch.save(good_ckpt, output_dir / "checkpoint_good.pt")
+            colors_sh_flat = torch.cat([colors_sh_dc.data.flatten(start_dim=1),
+                                        colors_sh_rest.data.flatten(start_dim=1)], dim=-1)
+            n_sh_full = 48
+            if colors_sh_flat.shape[-1] < n_sh_full:
+                pad = torch.zeros(len(colors_sh_flat), n_sh_full - colors_sh_flat.shape[-1],
+                                  device=colors_sh_flat.device)
+                colors_sh_flat = torch.cat([colors_sh_flat, pad], dim=-1)
+            export_ply(means.data, quats.data, torch.exp(scales.data),
+                       torch.sigmoid(opacities.data), colors_sh_flat,
+                       output_dir / "arena_3dgs_good.ply")
+            print(f"\n  Saved good model at iter {it+1} (loss={loss.item():.4f})")
+            good_model_saved = True
 
         loss.backward()
 
@@ -626,10 +690,16 @@ def train(args):
     print(f"\nTraining complete! Final loss: {loss.item():.6f}")
     print(f"Final Gaussian count: {len(means)}")
 
-    # Export PLY: combine DC + rest SH into standard format
+    # Export PLY: combine DC + rest SH, pad to full 48 columns for viewer compat
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    colors_sh_flat = torch.cat([colors_sh_dc.data.flatten(start_dim=1), colors_sh_rest.data.flatten(start_dim=1)], dim=-1)
+    colors_sh_flat = torch.cat([colors_sh_dc.data.flatten(start_dim=1),
+                                colors_sh_rest.data.flatten(start_dim=1)], dim=-1)
+    n_sh_full = 48  # (max_degree+1)^2 * 3 = 16 * 3 = always export full format
+    if colors_sh_flat.shape[-1] < n_sh_full:
+        pad = torch.zeros(len(colors_sh_flat), n_sh_full - colors_sh_flat.shape[-1],
+                          device=colors_sh_flat.device)
+        colors_sh_flat = torch.cat([colors_sh_flat, pad], dim=-1)
     export_ply(means.data, quats.data, torch.exp(scales.data),
                torch.sigmoid(opacities.data), colors_sh_flat,
                output_dir / "arena_3dgs.ply")
